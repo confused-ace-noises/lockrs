@@ -12,4 +12,9 @@ wgpu = "29.0.3"
 rustix = { version = "1.1.4", features = ["shm"] }
 
 libc = "0.2.186"
-pam = "*"
+pam = "0.8.0"
+
+egui = "0.34.3"
+egui-wgpu = "0.34.3"
+
+derive_more = { version = "2.1.1", features = ["full"] }
