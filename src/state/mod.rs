@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop, protocol::{wl_compositor::WlCompositor, wl_output::WlOutput, wl_registry::WlRegistry, wl_surface::WlSurface}};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop, protocol::{wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_registry::WlRegistry, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface}};
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
 
 use crate::{Output, Seat, utils::{global::Global, late::Late}};
@@ -19,6 +19,7 @@ pub struct App {
 pub struct State {
     pub compositor: Late<Global<WlCompositor>>,
     pub lock_manager: Late<Global<ExtSessionLockManagerV1>>,
+    pub shm: Late<Global<WlShm>>,
     pub seats: HashMap<u32, Seat>,
     
     pub outputs: HashMap<u32, Output>,
@@ -74,6 +75,28 @@ impl State {
 
 delegate_noop!(State: WlCompositor);
 delegate_noop!(State: ExtSessionLockManagerV1);
+delegate_noop!(State: WlShmPool);
 
 delegate_noop!(State: ignore WlSurface);
 delegate_noop!(State: ignore WlOutput);
+delegate_noop!(State: ignore WlShm);
+
+
+// impl Dispatch<WlBuffer, ()> for App {
+//     fn event(
+//         state: &mut Self,
+//         proxy: &WlBuffer,
+//         event: <WlBuffer as Proxy>::Event,
+//         data: &(),
+//         conn: &Connection,
+//         qhandle: &QueueHandle<Self>,
+//     ) {
+//         match event {
+//             wayland_client::protocol::wl_buffer::Event::Release => {
+
+//             },
+//             _ => todo!(),
+//         }
+//     }
+// }
+delegate_noop!(State: ignore WlBuffer);
