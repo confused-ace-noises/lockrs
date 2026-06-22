@@ -5,14 +5,12 @@ use raw_window_handle::{
 };
 use wayland_client::{
     Connection, Proxy, WEnum, protocol::{
-        wl_output::WlOutput,
-        wl_seat::{Capability, WlSeat},
-        wl_surface::WlSurface,
+        wl_output::WlOutput, wl_pointer, wl_seat::{Capability, WlSeat}, wl_surface::WlSurface,
     }
 };
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::ExtSessionLockSurfaceV1;
 use wgpu::Surface as WgpuSurface;
-use crate::utils::late::Late;
+use crate::{state::PointerEvent, utils::late::Late};
 
 pub mod state;
 pub mod utils;
@@ -24,6 +22,10 @@ pub struct Seat {
 }
 
 pub struct Output {
+    pub egui_context: Late<egui::Context>,
+    pub events_to_flush: Vec<egui::Event>,
+    pub pointer_events: Vec<PointerEvent>,
+    pub last_pointer_axis_event: Option<usize>,
     pub wl_output: WlOutput,
     pub surface_info: Late<SurfaceInfo>,
     pub name: u32,
@@ -33,6 +35,10 @@ pub struct Output {
 impl Output {
     pub fn new_uninit(wl_output: WlOutput, name: u32) -> Self {
         Self {
+            egui_context: Late::uninit(),
+            pointer_events: Vec::new(),
+            events_to_flush: Vec::new(),
+            last_pointer_axis_event: None,
             wl_output,
             surface_info: Late::uninit(),
             name,

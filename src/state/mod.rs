@@ -5,12 +5,28 @@ use egui_wgpu::{Renderer, RendererOptions};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
     protocol::{
-        wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_display::WlDisplay, wl_keyboard::WlKeyboard, wl_output::WlOutput, wl_pointer::WlPointer, wl_registry::WlRegistry, wl_seat::Capability, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface
+        wl_buffer::WlBuffer,
+        wl_compositor::WlCompositor,
+        wl_display::WlDisplay,
+        wl_keyboard::WlKeyboard,
+        wl_output::WlOutput,
+        wl_pointer::{self, WlPointer},
+        wl_registry::WlRegistry,
+        wl_seat::Capability,
+        wl_shm::WlShm,
+        wl_shm_pool::WlShmPool,
+        wl_surface::WlSurface,
     },
 };
-use wayland_protocols::ext::session_lock::v1::client::{ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1::ExtSessionLockV1};
+use wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1::ExtSessionLockV1,
+};
 use wgpu::{
-    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceTarget, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle}
+    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance,
+    InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference,
+    PresentMode, Queue, RequestAdapterOptions, SurfaceTarget, TextureFormat, TextureUsages,
+    TextureViewDescriptor,
+    wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
 };
 use xkbcommon::xkb::{self, ContextFlags};
 
@@ -35,12 +51,12 @@ pub struct State {
     pub compositor: Late<Global<WlCompositor>>,
     pub shm: Late<Global<WlShm>>,
     pub display_handle: Late<WaylandDisplayH>,
-    
+
     pub seats: HashMap<u32, Seat>,
     pub input: Late<Input>,
-    
+
     pub wgpu: Late<WgpuInfo>,
-    pub egui: Late<EguiInfo>,
+    pub egui_renderer: Late<Mutex<Renderer>>,
 
     pub lock_manager: Late<Global<ExtSessionLockManagerV1>>,
     pub session_lock: Late<ExtSessionLockV1>,
@@ -52,17 +68,42 @@ pub struct State {
     pub is_locked: bool,
 }
 
+impl State {
+    pub const DOTS_PER_LINE: f32 = 15.0;
+}
+
 pub struct Input {
     xkb_ctx: xkb::Context,
-    events: Vec<egui::Event>,
-    pointer: Option<WlPointer>,
+    pointer: Option<Pointer>,
     keyboard: Option<Kb>,
 }
 
 pub struct Kb {
+    pub focused_output: Option<u32>,
     wl_keyboard: WlKeyboard,
     xkb_state: Late<xkb::State>,
-    key_mods: egui::Modifiers
+    key_mods: egui::Modifiers,
+}
+
+pub struct Pointer {
+    pub focused_output: Option<u32>,
+    wl_pointer: WlPointer,
+    last_focused_output_in_events: Option<u32>,
+    pub last_pointer_pos: Option<(f32, f32)>,
+}
+
+pub enum PointerEvent {
+    Event(wl_pointer::Event),
+    Axis {
+        ordered_ev: Vec<wl_pointer::Event>,
+        source: Option<wl_pointer::AxisSource>,
+        /// bitfield:
+        /// 0b00000001 -> Axis
+        /// 0b00000010 -> AxisValue120
+        /// 0b00000100 -> AxisDiscrete
+        available_modes: u8,
+        is_stop: Option<bool>,
+    },
 }
 
 pub struct WgpuInfo {
@@ -138,7 +179,6 @@ impl App {
     pub fn init_input(&mut self) {
         self.state.input.init(Input {
             xkb_ctx: xkb::Context::new(xkb::CONTEXT_NO_FLAGS),
-            events: Vec::new(),
             pointer: None,
             keyboard: None,
         });
@@ -152,21 +192,30 @@ impl App {
                         if cap.contains(Capability::Keyboard) {
                             let wl_keyboard = seat.wl_seat.get_keyboard(&qh, ());
                             self.state.input.keyboard = Some(Kb {
+                                focused_output: None,
                                 wl_keyboard,
                                 xkb_state: Late::uninit(),
                                 key_mods: Modifiers::NONE,
                             })
                         }
 
-                        
-                    },
+                        if cap.contains(Capability::Pointer) {
+                            let wl_pointer = seat.wl_seat.get_pointer(&qh, ());
+                            self.state.input.pointer = Some(Pointer {
+                                focused_output: None,
+                                wl_pointer,
+                                last_focused_output_in_events: None,
+                                last_pointer_pos: None,
+                            })
+                        }
+                    }
                     wayland_client::WEnum::Unknown(_) => unimplemented!(),
                 }
-            }    
+            }
         }
 
         self.event_queue.roundtrip(&mut self.state).unwrap();
-    } 
+    }
 
     pub fn init_wgpu(&mut self) {
         let instance = wgpu::Instance::new(Self::wgpu_instance_desc(*self.state.display_handle));
@@ -209,7 +258,12 @@ impl App {
             );
         });
 
-        self.state.wgpu.init(WgpuInfo { instance, adapter, device, queue });
+        self.state.wgpu.init(WgpuInfo {
+            instance,
+            adapter,
+            device,
+            queue,
+        });
     }
 
     fn wgpu_surface_config(width: u32, height: u32) -> SurfaceConfiguration<Vec<TextureFormat>> {
@@ -236,7 +290,9 @@ impl App {
     }
 
     pub fn init_egui(&mut self) {
-        let ctx = egui::Context::default();
+        for (_, output) in self.state.outputs.iter_mut() {
+            output.egui_context.init(Context::default());
+        }
 
         let renderer = egui_wgpu::Renderer::new(
             &self.state.wgpu.device,
@@ -244,23 +300,22 @@ impl App {
             RendererOptions::default(),
         );
 
-        self.state.egui.init(EguiInfo { context: ctx, renderer: Mutex::new(renderer) });
+        self.state.egui_renderer.init(Mutex::new(renderer));
     }
 
     pub fn frame_to_output(&mut self, output_name: u32, run_ui: impl FnMut(&mut Ui)) -> Option<()> {
         let device = &self.state.wgpu.device;
         let output = self.state.outputs.get_mut(&output_name)?;
         let wgpu_surface = &output.surface_info.wgpu_surface;
-        let ctx = &self.state.egui.context;
-        
+        let ctx = &output.egui_context;
+
         let width = *output.surface_info.width;
         let height = *output.surface_info.height;
-        
+
         let surface_texture = match wgpu_surface.get_current_texture() {
             CurrentSurfaceTexture::Success(texture) => texture,
             CurrentSurfaceTexture::Suboptimal(texture) => {
-
-                wgpu_surface.configure(&self.state.wgpu.device, &Self::wgpu_surface_config(width, height));
+                // wgpu_surface.configure(&self.state.wgpu.device, &Self::wgpu_surface_config(width, height));
                 texture
             }
             _ => return None,
@@ -273,7 +328,7 @@ impl App {
             .create_view(&TextureViewDescriptor::default());
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [width, height], // height, width?
+            size_in_pixels: [width, height],
             pixels_per_point: ctx.pixels_per_point(),
         };
 
@@ -282,15 +337,19 @@ impl App {
                 egui::Pos2::ZERO,
                 egui::Vec2::new(width as f32, height as f32),
             )),
-            events: self.state.input.events.drain(..).collect(), 
+            events: output.events_to_flush.drain(..).collect(),
             ..Default::default()
         };
 
-        let full_output = self.state.egui.context.run_ui(raw_input, run_ui);
+        let full_output = ctx.run_ui(raw_input, run_ui);
 
         let primitives = ctx.tessellate(full_output.shapes, ctx.pixels_per_point());
 
-        let mut renderer = self.state.egui.renderer.lock().unwrap();
+        let mut renderer = self.state.egui_renderer.lock().unwrap();
+
+        for (id, delta) in &full_output.textures_delta.set {
+            renderer.update_texture(device, &self.state.wgpu.queue, *id, delta);
+        }
 
         renderer.update_buffers(
             device,
@@ -313,11 +372,16 @@ impl App {
         let mut pass = pass.forget_lifetime();
         renderer.render(&mut pass, &primitives, &screen_descriptor);
 
+        for id in &full_output.textures_delta.free {
+            renderer.free_texture(id);
+        }
+
         drop(renderer);
         drop(pass);
 
         self.state.wgpu.queue.submit([encoder.finish()]);
         surface_texture.present();
+        self.event_queue.roundtrip(&mut self.state).unwrap();
         Some(())
     }
 }

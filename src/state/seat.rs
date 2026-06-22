@@ -1,16 +1,22 @@
 use core::panic;
+use egui::{Modifiers, MouseWheelUnit, PointerButton, Pos2, TouchPhase, Vec2};
 use libc::mmap;
-use std::{os::fd::AsRawFd, ptr};
+use std::{collections::HashMap, os::fd::AsRawFd, ptr};
 use wayland_client::{
     Connection, Dispatch, Proxy, WEnum,
     protocol::{
         wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
+        wl_pointer::{self, Axis, AxisSource, ButtonState, WlPointer},
         wl_seat::{self, WlSeat},
+        wl_surface::WlSurface,
     },
 };
 use xkbcommon::xkb::{self, Keycode};
 
-use crate::state::{Kb, State};
+use crate::{
+    Output,
+    state::{Kb, PointerEvent, State},
+};
 
 impl Dispatch<WlSeat, u32> for State {
     fn event(
@@ -88,15 +94,24 @@ impl Dispatch<WlKeyboard, ()> for State {
                 }
             }
 
-            wl_keyboard::Event::Enter {
-                ..
-            } => {
+            wl_keyboard::Event::Enter { surface, .. } => {
+                let output = surface_to_output(state, &surface);
 
-            },
+                output
+                    .events_to_flush
+                    .push(egui::Event::WindowFocused(true));
+                state.input.keyboard.as_mut().unwrap().focused_output = Some(output.name);
+            }
 
-            wl_keyboard::Event::Leave { .. } => {
-                
-            },
+            wl_keyboard::Event::Leave { surface, .. } => {
+                let output = surface_to_output(state, &surface);
+
+                output
+                    .events_to_flush
+                    .push(egui::Event::WindowFocused(false));
+
+                state.input.keyboard.as_mut().unwrap().focused_output = None;
+            }
 
             wl_keyboard::Event::Key {
                 key,
@@ -104,23 +119,34 @@ impl Dispatch<WlKeyboard, ()> for State {
                 ..
             } => {
                 match state.input.keyboard {
-                    Some(_) => {},
+                    Some(_) => {}
                     None => return,
                 }
 
                 // tmp early debug exit
-                state.session_lock.unlock_and_destroy();
-                state.exit = Some(0);
-                println!("exiting...");
-                return;
+                // state.session_lock.unlock_and_destroy();
+                // state.exit = Some(0);
+                // println!("exiting...");
+                // return;
+
+                let Some(output_name) = state.input.keyboard.as_ref().unwrap().focused_output
+                else {
+                    return;
+                };
+
+                let output = state.outputs.get_mut(&output_name).unwrap();
 
                 let keycode = key + 8;
                 let is_pressed = keystate == WEnum::Value(KeyState::Pressed);
-                let sym = state.input.keyboard.as_ref().unwrap().xkb_state.key_get_one_sym(keycode.into());
+                let sym = state
+                    .input
+                    .keyboard
+                    .as_ref()
+                    .unwrap()
+                    .xkb_state
+                    .key_get_one_sym(keycode.into());
 
                 let mods = state.input.keyboard.as_ref().unwrap().key_mods;
-                
-                
 
                 let egui_key = match sym.raw() {
                     xkb::keysyms::KEY_BackSpace => Some(egui::Key::Backspace),
@@ -130,19 +156,30 @@ impl Dispatch<WlKeyboard, ()> for State {
                 };
 
                 if let Some(key) = egui_key {
-                    state.input.events.push(egui::Event::Key { key, physical_key: None, pressed: is_pressed, repeat: false, modifiers: mods });
+                    output.events_to_flush.push(egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: is_pressed,
+                        repeat: false,
+                        modifiers: mods,
+                    });
                 }
 
                 if is_pressed {
-                    let text = state.input.keyboard.as_ref().unwrap().xkb_state.key_get_utf8(Keycode::new(keycode));
+                    let text = state
+                        .input
+                        .keyboard
+                        .as_ref()
+                        .unwrap()
+                        .xkb_state
+                        .key_get_utf8(Keycode::new(keycode));
                     if !text.is_empty() && !text.chars().all(|c| c.is_control()) {
-                        state.input.events.push(egui::Event::Text(text));
+                        output.events_to_flush.push(egui::Event::Text(text));
                     }
                 }
+            }
 
-            },
-
-            wl_keyboard::Event::Modifiers {                
+            wl_keyboard::Event::Modifiers {
                 mods_depressed,
                 mods_latched,
                 mods_locked,
@@ -152,10 +189,336 @@ impl Dispatch<WlKeyboard, ()> for State {
                 if let Some(Kb { xkb_state, .. }) = &mut state.input.keyboard {
                     xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
                 }
-            },
+            }
 
-            wl_keyboard::Event::RepeatInfo { .. } => {},
-            _ => {},
+            wl_keyboard::Event::RepeatInfo { .. } => {} // TODO: do repeating
+            _ => {}
         }
     }
+}
+
+impl Dispatch<WlPointer, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &WlPointer,
+        event: <WlPointer as Proxy>::Event,
+        data: &(),
+        conn: &Connection,
+        qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        fn output(state: &mut State) -> &mut Output {
+            state
+                .outputs
+                .get_mut(
+                    &state
+                        .input
+                        .pointer
+                        .as_ref()
+                        .unwrap()
+                        .last_focused_output_in_events
+                        .unwrap(),
+                )
+                .unwrap()
+        }
+
+        if !matches!(event, wl_pointer::Event::Frame) {
+            match event {
+                wl_pointer::Event::Enter { ref surface, .. } => {
+                    let output = surface_to_output(state, surface);
+                    output.pointer_events.push(PointerEvent::Event(event));
+                    state
+                        .input
+                        .pointer
+                        .as_mut()
+                        .unwrap()
+                        .last_focused_output_in_events = Some(output.name);
+                }
+
+                wl_pointer::Event::Leave { .. } => {
+                    let last_focus = &mut state
+                        .input
+                        .pointer
+                        .as_mut()
+                        .unwrap()
+                        .last_focused_output_in_events;
+                    let output = state
+                        .outputs
+                        .get_mut(&last_focus.expect("server sent two leave events?"))
+                        .unwrap();
+                    output.pointer_events.push(PointerEvent::Event(event));
+                    *last_focus = None;
+                }
+
+                wl_pointer::Event::Axis { .. }
+                | wl_pointer::Event::AxisDiscrete { .. }
+                | wl_pointer::Event::AxisValue120 { .. }
+                | wl_pointer::Event::AxisStop { .. }
+                | wl_pointer::Event::AxisSource { .. } => {
+                    let output = output(state);
+
+                    let PointerEvent::Axis {
+                        mut ordered_ev,
+                        mut source,
+                        mut available_modes,
+                        mut is_stop
+                    } = output
+                        .last_pointer_axis_event
+                        .map(|x| output.pointer_events.remove(x))
+                        .unwrap_or(PointerEvent::Axis {
+                            ordered_ev: Vec::new(),
+                            source: None,
+                            available_modes: 0,
+                            is_stop: None,
+                        })
+                    else {
+                        unreachable!()
+                    };
+
+                    let new_index = output.pointer_events.len();
+                    match event {
+                        wl_pointer::Event::Axis { .. } => available_modes |= 0b00000001,
+                        wl_pointer::Event::AxisValue120 { .. } => available_modes |= 0b00000010,
+                        wl_pointer::Event::AxisDiscrete { .. } => available_modes |= 0b00000100,
+                        wl_pointer::Event::AxisSource {
+                            axis_source: WEnum::Value(src),
+                        } => source = Some(src),
+                        wl_pointer::Event::AxisStop { .. } => {
+                            if is_stop.is_none() {
+                                is_stop = Some(false);
+                            } else if !is_stop.unwrap() {
+                                is_stop = Some(true);
+                            }
+                        } 
+                        _ => {}
+                    }
+                    ordered_ev.push(event);
+                    output.pointer_events.push(PointerEvent::Axis {
+                        ordered_ev,
+                        source,
+                        available_modes,
+                        is_stop
+                    });
+                    output.last_pointer_axis_event = Some(new_index);
+                }
+
+                wl_pointer::Event::Frame => unreachable!("can't be here"),
+
+                event => {
+                    let output = output(state);
+                    output.pointer_events.push(PointerEvent::Event(event));
+                }
+            }
+        }
+
+        for (_, output) in state.outputs.iter_mut() {
+            for event in output.pointer_events.drain(..) {
+                match event {
+                    PointerEvent::Event(event) => match event {
+                        wl_pointer::Event::Enter { .. } => {
+                            output
+                                .events_to_flush
+                                .push(egui::Event::WindowFocused(true));
+                            state.input.pointer.as_mut().unwrap().focused_output =
+                                Some(output.name);
+                        }
+
+                        wl_pointer::Event::Leave { .. } => {
+                            output
+                                .events_to_flush
+                                .push(egui::Event::WindowFocused(false));
+                            state.input.pointer.as_mut().unwrap().focused_output = None;
+                        }
+
+                        wl_pointer::Event::Motion {
+                            time,
+                            surface_x,
+                            surface_y,
+                        } => {
+                            state.input.pointer.as_mut().unwrap().last_pointer_pos = Some((surface_x as f32, surface_y as f32));
+                            output.events_to_flush.push(egui::Event::PointerMoved(Pos2 {
+                                x: surface_x as f32,
+                                y: surface_y as f32,
+                            }));
+                        }
+
+                        wl_pointer::Event::Button {
+                            serial,
+                            time,
+                            button,
+                            state: button_state,
+                        } => {
+                            let modifiers = state
+                                .input
+                                .keyboard
+                                .as_ref()
+                                .map(|x| x.key_mods)
+                                .unwrap_or(Modifiers::NONE);
+
+                            let pointer = state.input.pointer.as_mut().unwrap();
+
+                            let pressed =
+                                matches!(button_state, WEnum::Value(ButtonState::Pressed));
+
+                            let button = match button {
+                                272 => PointerButton::Primary,
+                                273 => PointerButton::Secondary,
+                                274 => PointerButton::Middle,
+                                275 => PointerButton::Extra1,
+                                276 => PointerButton::Extra2,
+                                _ => return, // unimplemented
+                            };
+
+                            if let Some(pos) = pointer.last_pointer_pos {
+                                output.events_to_flush.push(egui::Event::PointerButton {
+                                    pos: pos.into(),
+                                    button,
+                                    pressed,
+                                    modifiers,
+                                });
+                            }
+
+                        }
+                        _ => unimplemented!(),
+                    },
+
+                    PointerEvent::Axis {
+                        ordered_ev,
+                        source,
+                        available_modes,
+                        is_stop
+                    } => {
+                        let is_axis120 = || available_modes & 0b0000010 == 0b0000010;
+                        let is_axis_discrete = || available_modes & 0b0000100 == 0b0000100;
+                        let is_axis = || available_modes & 0b0000001 == 0b0000001;
+
+                        match source {
+                            Some(AxisSource::Wheel) => {
+                                // maybe fix this?
+                                let delta: Vec2 = if is_axis120() {
+                                    calculate_delta(ordered_ev, |ev| {
+                                        if let wl_pointer::Event::AxisValue120 {
+                                            axis: WEnum::Value(axis),
+                                            value120,
+                                        } = ev
+                                        {
+                                            Some((axis, (*value120 as f32 / 120.)))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else if is_axis_discrete() {
+                                    calculate_delta(ordered_ev, |ev| {
+                                        if let wl_pointer::Event::AxisDiscrete {
+                                            axis: WEnum::Value(axis),
+                                            discrete,
+                                        } = ev
+                                        {
+                                            Some((axis, *discrete as f32))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else if is_axis() {
+                                    calculate_delta(ordered_ev, |ev| {
+                                        if let wl_pointer::Event::Axis {
+                                            axis: WEnum::Value(axis),
+                                            value,
+                                            ..
+                                        } = ev
+                                        {
+                                            Some((axis, (*value as f32 / 15.)))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else {
+                                    unimplemented!("what should i do then???")
+                                };
+
+                                let mut should_be_stop = false;
+
+                                if (delta.x == 0. || delta.y == 0.) && is_stop.is_some() {
+                                    should_be_stop = true
+                                } else if is_stop.is_some() {
+                                    should_be_stop = is_stop.unwrap();
+                                }
+
+                                output.events_to_flush.push(egui::Event::MouseWheel {
+                                    unit: MouseWheelUnit::Line,
+                                    delta,
+                                    phase: if should_be_stop { TouchPhase::End } else { TouchPhase::Move },
+                                    modifiers: state.input.keyboard.as_ref().unwrap().key_mods,
+                                });
+                            }
+                            Some(AxisSource::Continuous) | Some(AxisSource::Finger) | None => {
+                                let delta = if is_axis() {
+                                    calculate_delta(ordered_ev, |ev| {
+                                        if let wl_pointer::Event::Axis {
+                                            axis: WEnum::Value(axis),
+                                            value,
+                                            ..
+                                        } = ev
+                                        {
+                                            Some((axis, *value as f32))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else {
+                                    Vec2::ZERO // TODO
+                                };
+
+                                let mut should_be_stop = false;
+
+                                if (delta.x == 0. || delta.y == 0.) && is_stop.is_some() {
+                                    should_be_stop = true
+                                } else if is_stop.is_some() {
+                                    should_be_stop = is_stop.unwrap();
+                                }
+
+                                output.events_to_flush.push(egui::Event::MouseWheel {
+                                    unit: MouseWheelUnit::Point,
+                                    delta,
+                                    phase: if should_be_stop { TouchPhase::End } else { TouchPhase::Move },
+                                    modifiers: state.input.keyboard.as_ref().unwrap().key_mods,
+                                });
+                            },
+
+                            Some(AxisSource::WheelTilt) => {
+                                eprintln!("no idea how to handle this");
+                            },
+
+                            Some(_) => todo!(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn calculate_delta(
+    events: Vec<wl_pointer::Event>,
+    f: impl for<'a> FnMut(&'a wl_pointer::Event) -> Option<(&'a Axis, f32)>,
+) -> Vec2 {
+    events
+        .iter()
+        .filter_map(f)
+        .fold(Vec2::ZERO, |mut init, (axis, amount)| {
+            match axis {
+                wl_pointer::Axis::VerticalScroll => init.y += amount,
+                wl_pointer::Axis::HorizontalScroll => init.x += amount,
+                _ => unimplemented!(),
+            }
+
+            init
+        })
+}
+
+fn surface_to_output<'a>(state: &'a mut State, surface: &WlSurface) -> &'a mut Output {
+    state
+        .outputs
+        .values_mut()
+        .find(|output| output.surface_info.surface == *surface)
+        .expect("wl_keyboard::Event passed a surface the client doesn't own")
 }

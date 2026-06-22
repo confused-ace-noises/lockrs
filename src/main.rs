@@ -1,10 +1,7 @@
 use std::time::Duration;
 
-use egui::{Color32, Frame, RichText};
-use wgpu::{
-    CurrentSurfaceTexture, Operations,
-    wgt::TextureViewDescriptor,
-};
+use egui::{Color32, Frame, Key, RichText};
+use wgpu::{CurrentSurfaceTexture, Operations, naga::Statement::Break, wgt::TextureViewDescriptor};
 use wl_lock::state::App;
 
 fn main() {
@@ -15,19 +12,45 @@ fn main() {
     app.init_egui();
     app.init_input();
 
-    // app.frame_to_output(*app.state.outputs.iter().next().unwrap().0, |ui| {});
+    let mut string = String::new();
+
+    loop {
+        let mut should_break = false;
+        let names = app.state.outputs.keys().cloned().collect::<Vec<_>>();
+
+        for name in names {
+            app.frame_to_output(name, |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 2.0 - 20.0); // center
+    
+                        ui.add(
+                            egui::TextEdit::singleline(&mut string)
+                                .desired_width(300.0) 
+                                .hint_text("Password..."),
+                        );
+    
+                        if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                            should_break = true;
+                        }
+                    });
+                });
+            });
+    
+        }
+        if should_break {
+            break;
+        }
+    }
+
+    println!("input: -- {string} --");
 
     app.event_queue.roundtrip(&mut app.state).unwrap();
 
+    app.state.session_lock.unlock_and_destroy();
+    app.event_queue.roundtrip(&mut app.state).unwrap();
 
-    
     // std::thread::sleep(Duration::from_secs(2));
-    // app.state.session_lock.unlock_and_destroy();
-    // app.event_queue.roundtrip(&mut app.state).unwrap();
-
-    while app.state.exit.is_none() {
-        app.event_queue.roundtrip(&mut app.state).unwrap();
-    }
 }
 
 // let surfaces = surfaces.into_iter().map(|surface | {
