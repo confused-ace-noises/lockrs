@@ -1,32 +1,17 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, fs, mem, sync::Mutex, time::Instant};
 
-use egui::{Context, Modifiers, RawInput, Ui};
+use egui::{Context, FullOutput, Modifiers, RawInput, Ui, text};
 use egui_wgpu::{Renderer, RendererOptions};
 use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
-    protocol::{
-        wl_buffer::WlBuffer,
-        wl_compositor::WlCompositor,
-        wl_display::WlDisplay,
-        wl_keyboard::WlKeyboard,
-        wl_output::WlOutput,
-        wl_pointer::{self, WlPointer},
-        wl_registry::WlRegistry,
-        wl_seat::Capability,
-        wl_shm::WlShm,
-        wl_shm_pool::WlShmPool,
-        wl_surface::WlSurface,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop, protocol::{
+        wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_display::WlDisplay, wl_keyboard::WlKeyboard, wl_output::WlOutput, wl_pointer::{self, WlPointer}, wl_registry::WlRegistry, wl_seat::Capability, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
     },
 };
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1::ExtSessionLockV1,
 };
 use wgpu::{
-    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance,
-    InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference,
-    PresentMode, Queue, RequestAdapterOptions, SurfaceTarget, TextureFormat, TextureUsages,
-    TextureViewDescriptor,
-    wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
+    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Extent3d, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, Origin3d, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceTarget, TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfoBase, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{CommandEncoderDescriptor, DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
 };
 use xkbcommon::xkb::{self, ContextFlags};
 
@@ -66,6 +51,7 @@ pub struct State {
     pub exit: Option<u32>,
 
     pub is_locked: bool,
+    pub new_events: bool,
 }
 
 impl State {
@@ -251,6 +237,8 @@ impl App {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&DeviceDescriptor::default())).unwrap();
 
+        println!("{}", device.limits().max_texture_dimension_3d);
+
         self.state.outputs.iter_mut().for_each(|(_, output)| {
             output.surface_info.wgpu_surface.configure(
                 &device,
@@ -268,7 +256,7 @@ impl App {
 
     fn wgpu_surface_config(width: u32, height: u32) -> SurfaceConfiguration<Vec<TextureFormat>> {
         SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
             format: TextureFormat::Bgra8UnormSrgb,
             width,
             height,
@@ -291,7 +279,9 @@ impl App {
 
     pub fn init_egui(&mut self) {
         for (_, output) in self.state.outputs.iter_mut() {
-            output.egui_context.init(Context::default());
+            let ctx = Context::default();
+            ctx.input_mut(|x| x.max_texture_side = 8000);
+            output.egui_context.init(ctx);
         }
 
         let renderer = egui_wgpu::Renderer::new(
@@ -303,14 +293,39 @@ impl App {
         self.state.egui_renderer.init(Mutex::new(renderer));
     }
 
+    pub fn send_frame_req(&mut self) {
+        let qh = self.event_queue.handle();
+
+        for (_, output) in self.state.outputs.iter() {
+            output.surface_info.surface.frame(&qh, ());
+        }
+        self.event_queue.roundtrip(&mut self.state).unwrap();
+    }
+
+    pub fn image_capabilities(&mut self) {
+        for (_, output) in self.state.outputs.iter() {
+            egui_extras::install_image_loaders(&output.egui_context)
+            // output.egui_context.options_mut(|x| x);
+        }
+        self.event_queue.roundtrip(&mut self.state).unwrap();
+    }
+
     pub fn frame_to_output(&mut self, output_name: u32, run_ui: impl FnMut(&mut Ui)) -> Option<()> {
         let device = &self.state.wgpu.device;
         let output = self.state.outputs.get_mut(&output_name)?;
         let wgpu_surface = &output.surface_info.wgpu_surface;
         let ctx = &output.egui_context;
 
+        let qh = &self.event_queue.handle();
+
+        output.surface_info.surface.frame(qh, ());
+
         let width = *output.surface_info.width;
         let height = *output.surface_info.height;
+
+        if !(self.state.new_events || output.egui_context.has_requested_repaint()) {
+            return Some(());
+        }
 
         let surface_texture = match wgpu_surface.get_current_texture() {
             CurrentSurfaceTexture::Success(texture) => texture,
@@ -337,11 +352,13 @@ impl App {
                 egui::Pos2::ZERO,
                 egui::Vec2::new(width as f32, height as f32),
             )),
-            events: output.events_to_flush.drain(..).collect(),
+            events: mem::take(&mut output.events_to_flush),
             ..Default::default()
         };
 
         let full_output = ctx.run_ui(raw_input, run_ui);
+
+        // let next =
 
         let primitives = ctx.tessellate(full_output.shapes, ctx.pixels_per_point());
 
@@ -381,7 +398,7 @@ impl App {
 
         self.state.wgpu.queue.submit([encoder.finish()]);
         surface_texture.present();
-        self.event_queue.roundtrip(&mut self.state).unwrap();
+        self.event_queue.flush().unwrap();
         Some(())
     }
 }
@@ -433,3 +450,18 @@ delegate_noop!(State: ignore WlShm);
 //     }
 // }
 delegate_noop!(State: ignore WlBuffer);
+
+impl Dispatch<WlCallback, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &WlCallback,
+        event: <WlCallback as Proxy>::Event,
+        data: &(),
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        if let wayland_client::protocol::wl_callback::Event::Done { .. } = event {
+            state.new_events = true;
+        }
+    }
+}

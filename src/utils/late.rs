@@ -21,8 +21,13 @@ impl<T> Late<T> {
     }
 
     pub fn init(&mut self, val: T) {
-        self.maybe_uninit.write(val);
-        self.has_init = true;
+        if self.is_init() {
+            unsafe { self.maybe_uninit.assume_init_drop() };
+            self.maybe_uninit.write(val);
+        } else {
+            self.maybe_uninit.write(val);
+            self.has_init = true;
+        }
     }
 
     pub fn is_init(&self) -> bool {

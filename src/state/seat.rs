@@ -194,6 +194,8 @@ impl Dispatch<WlKeyboard, ()> for State {
             wl_keyboard::Event::RepeatInfo { .. } => {} // TODO: do repeating
             _ => {}
         }
+
+        state.new_events = true;
     }
 }
 
@@ -494,6 +496,8 @@ impl Dispatch<WlPointer, ()> for State {
                 }
             }
         }
+
+        state.new_events = true;
     }
 }
 
