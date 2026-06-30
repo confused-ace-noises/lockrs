@@ -60,6 +60,9 @@ app.ui(|output_name, ui| {
 this code will produce the following output:
 ![screenshot of lockrs' output](.assets/screenshot.png)
 
+## Usage
+Refer to USAGE.md
+
 ### Updates
 This library may be updated in the future, so if it does happen, the API will probably change a bit.
 
