@@ -8,6 +8,7 @@ readme = "../README.md"
 repository = "https://github.com/confused-ace-noises/lockrs"
 keywords = ["egui", "wayland", "lock", "lockscreen", "ext-session-lock-v1"]
 categories = ["graphics", "gui"]
+exclude = [".assets/*", "USAGE.md"]
 
 [dependencies]
 wayland-client = "0.31.14"
