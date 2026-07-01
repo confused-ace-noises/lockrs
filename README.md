@@ -61,7 +61,13 @@ this code will produce the following output:
 ![screenshot of lockrs' output](.assets/screenshot.png)
 
 ## Usage
-Refer to USAGE.md
+To use this library, simply add it in the dependencies of your Rust project:
+```toml
+# Cargo.toml
+
+[dependencies]
+lockrs = "0.1.0" # put latest version here
+```
 
 ### Updates
 This library may be updated in the future, so if it does happen, the API will probably change a bit.
