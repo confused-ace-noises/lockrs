@@ -67,6 +67,9 @@ To use this library, simply add it in the dependencies of your Rust project:
 
 [dependencies]
 lockrs = "0.1.0" # put latest version here
+
+# note: lockrs depends on egui 0.34.3
+egui = "0.34.3"
 ```
 
 ### Updates
