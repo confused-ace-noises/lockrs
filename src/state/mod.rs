@@ -193,7 +193,7 @@ impl App {
 
         let qh = self.event_queue.handle();
 
-        for (_, seat) in self.state.seats.iter() {
+        for seat in self.state.seats.values() {
             if let Some(caps) = seat.capabilities {
                 match caps {
                     wayland_client::WEnum::Value(cap) => {
@@ -228,7 +228,7 @@ impl App {
     pub fn init_wgpu(&mut self) {
         let instance = wgpu::Instance::new(Self::wgpu_instance_desc(*self.state.display_handle));
 
-        for (_, output) in self.state.outputs.iter_mut() {
+        for output in self.state.outputs.values_mut() {
             let wgpu_surface = instance
                 .create_surface(SurfaceTarget::Window(Box::new(
                     output.surface_info.surface_handle,
@@ -258,8 +258,6 @@ impl App {
 
         let (device, queue) =
             pollster::block_on(adapter.request_device(&DeviceDescriptor::default())).unwrap();
-
-        println!("{}", device.limits().max_texture_dimension_3d);
 
         self.state.outputs.iter_mut().for_each(|(_, output)| {
             output.surface_info.wgpu_surface.configure(
@@ -300,7 +298,7 @@ impl App {
     }
 
     pub fn init_egui(&mut self) {
-        for (_, output) in self.state.outputs.iter_mut() {
+        for output in self.state.outputs.values_mut() {
             let ctx = Context::default();
             ctx.input_mut(|x| x.max_texture_side = 8000);
             output.egui_context.init(ctx);
@@ -318,14 +316,14 @@ impl App {
     pub fn send_frame_req(&mut self) {
         let qh = self.event_queue.handle();
 
-        for (_, output) in self.state.outputs.iter() {
+        for output in self.state.outputs.values() {
             output.surface_info.surface.frame(&qh, ());
         }
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
 
     pub fn image_capabilities(&mut self) {
-        for (_, output) in self.state.outputs.iter() {
+        for output in self.state.outputs.values() {
             egui_extras::install_image_loaders(&output.egui_context)
             // output.egui_context.options_mut(|x| x);
         }
@@ -353,11 +351,9 @@ impl App {
         pam_client.conversation_mut().set_credentials(&self.state.pam.username, passwd);
         match pam_client.authenticate() {
             Ok(_) => {
-                println!("success!");
                 true
             },
-            Err(e) => {
-                println!("failed: {e:?}");
+            Err(_) => {
                 false
             } 
         }

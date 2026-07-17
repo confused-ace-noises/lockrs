@@ -1,6 +1,6 @@
 [package]
 name = "lockrs"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A library that implements egui for Wayland lockscreen surfaces"
 license = "MIT OR Apache-2.0"
@@ -32,6 +32,5 @@ pollster = "0.4.0"
 
 image = { version = "0.25", features = ["jpeg", "png"] }
 egui_extras = { version = "0.34.3", features = ["image"] }
-egui_alignments = "0.3.8"
 
 chrono = "0.4.45"

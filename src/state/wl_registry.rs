@@ -17,8 +17,6 @@ impl Dispatch<WlRegistry, ()> for State {
                 interface,
                 version,
             } => {
-                println!("{name}: {interface} v{version}");
-
                 match interface.as_str() {
                     "wl_compositor" => Self::bind(
                         &mut state.compositor,

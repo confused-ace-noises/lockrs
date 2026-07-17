@@ -126,7 +126,7 @@ impl App {
 
             self.send_frame_req();
 
-            for (_, output) in self.state.outputs.iter_mut() {
+            for output in self.state.outputs.values_mut() {
                 let mut exit: TryExit = TryExit::None;
 
                 let display_name = &*output.display_name;
@@ -251,3 +251,9 @@ impl App {
 }
 
 fn coerce_hrtb<F: for<'a> FnMut(&'a mut egui::Ui)>(f: F) -> F { f }
+
+pub mod prelude {
+    pub use crate::state::App;
+    pub use crate::TryExit;
+    pub use crate::widgets;
+}

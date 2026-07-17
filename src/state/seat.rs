@@ -269,7 +269,6 @@ impl Dispatch<WlPointer, ()> for State {
                             if output.pointer_events.len() > x {
                                 Some(output.pointer_events.remove(x))
                             } else {
-                                eprintln!("fuck");
                                 None
                             }
                         })
@@ -284,7 +283,6 @@ impl Dispatch<WlPointer, ()> for State {
                     };
 
                     let new_index = output.pointer_events.len();
-                    println!("ev: {event:?}");
                     match event {
                         wl_pointer::Event::Axis { .. } => available_modes |= 0b00000001,
                         wl_pointer::Event::AxisValue120 { .. } => available_modes |= 0b00000010,
@@ -321,7 +319,7 @@ impl Dispatch<WlPointer, ()> for State {
             return;
         }
 
-        for (_, output) in state.outputs.iter_mut() {
+        for output in state.outputs.values_mut() {
             for event in output.pointer_events.drain(..) {
                 match event {
                     PointerEvent::Event(event) => match event {
@@ -402,8 +400,6 @@ impl Dispatch<WlPointer, ()> for State {
                         let is_axis_discrete = || available_modes & 0b0000100 == 0b0000100;
                         let is_axis = || available_modes & 0b0000001 == 0b0000001;
 
-                        println!("{available_modes:b}");
-
                         match source {
                             Some(AxisSource::Wheel) => {
                                 // maybe fix this?
@@ -445,7 +441,7 @@ impl Dispatch<WlPointer, ()> for State {
                                         }
                                     })
                                 } else {
-                                    eprintln!("what should i do then???");
+                                    eprintln!("what should i do then??? report this.");
                                     Vec2 { x: 0., y: 0. }
                                 };
 

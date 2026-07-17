@@ -511,15 +511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_alignments"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c17980fd9e64c7dfac673356e9e92773541fbc4d4fde06a81a965fcaba1bd7e"
-dependencies = [
- "egui",
-]
-
-[[package]]
 name = "egui_extras"
 version = "0.34.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1140,13 +1131,12 @@ dependencies = [
 
 [[package]]
 name = "lockrs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "derive_more",
  "egui",
  "egui-wgpu",
- "egui_alignments",
  "egui_extras",
  "image",
  "libc",
