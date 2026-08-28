@@ -1,6 +1,6 @@
 use std::time::Duration;
 use chrono::Local;
-use egui::{RichText, Widget};
+use egui::{Layout, RichText, Widget};
 
 pub struct Clock {
     pub time_style: Box<dyn Fn(RichText) -> RichText>,
@@ -31,10 +31,13 @@ impl Widget for Clock {
         let date = now.format("%A %_d/%m/%y").to_string();
         let time = now.format("%R").to_string();
 
-        ui.vertical_centered(|ui| {
-            ui.label((self.time_style)(RichText::new(time)));
-            ui.label((self.date_style)(RichText::new(date)));
-        }).response
+        ui.with_layout(
+            egui::Layout::top_down(egui::Align::Center),
+            |ui| {
+                ui.label((self.time_style)(RichText::new(time)));
+                ui.label((self.date_style)(RichText::new(date)));
+            },
+        ).response
     }
 }
 
