@@ -188,7 +188,9 @@ impl App {
                     let mut renderer = self.state.egui_renderer.lock().unwrap();
 
                     for (id, delta) in &full_output.textures_delta.set {
-                        renderer.update_texture(device, &self.state.wgpu.queue, *id, delta);
+                        for d in delta {
+                            renderer.update_texture(device, &self.state.wgpu.queue, *id, d);
+                        }
                     }
 
                     renderer.update_buffers(
@@ -220,8 +222,7 @@ impl App {
                     drop(pass);
 
                     self.state.wgpu.queue.submit([encoder.finish()]);
-                    
-                    surface_texture.present();
+                    self.state.wgpu.queue.present(surface_texture);
                     self.event_queue.flush().unwrap();
                 }
 

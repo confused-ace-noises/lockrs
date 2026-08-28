@@ -12,7 +12,7 @@ use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1::ExtSessionLockV1,
 };
 use wgpu::{
-    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceTarget, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
+    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceColorSpace, SurfaceTarget, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
 };
 use xkbcommon::xkb::{self};
 
@@ -284,6 +284,7 @@ impl App {
             desired_maximum_frame_latency: 2,
             alpha_mode: CompositeAlphaMode::Auto,
             view_formats: vec![],
+            color_space: SurfaceColorSpace::Auto,
         }
     }
 
@@ -412,7 +413,9 @@ impl App {
         let mut renderer = self.state.egui_renderer.lock().unwrap();
 
         for (id, delta) in &full_output.textures_delta.set {
-            renderer.update_texture(device, &self.state.wgpu.queue, *id, delta);
+            for d in delta {
+                renderer.update_texture(device, &self.state.wgpu.queue, *id, d);
+            }
         }
 
         renderer.update_buffers(
@@ -444,7 +447,7 @@ impl App {
         drop(pass);
 
         self.state.wgpu.queue.submit([encoder.finish()]);
-        surface_texture.present();
+        self.state.wgpu.queue.present(surface_texture);
         self.event_queue.flush().unwrap();
         Some(())
     }
