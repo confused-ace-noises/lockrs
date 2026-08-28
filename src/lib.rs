@@ -181,15 +181,15 @@ impl App {
                         ..Default::default()
                     };
 
-                    let full_output = ctx.run_ui(raw_input, run_ui);
+                    let mut full_output = ctx.run_ui(raw_input, run_ui);
 
                     let primitives = ctx.tessellate(full_output.shapes, ctx.pixels_per_point());
 
                     let mut renderer = self.state.egui_renderer.lock().unwrap();
 
-                    for (id, delta) in &full_output.textures_delta.set {
-                        for d in delta {
-                            renderer.update_texture(device, &self.state.wgpu.queue, *id, d);
+                    for (id, delta) in full_output.textures_delta.set.drain() {
+                        for d in &delta {
+                            renderer.update_texture(device, &self.state.wgpu.queue, id, d);
                         }
                     }
 
