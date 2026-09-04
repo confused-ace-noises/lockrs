@@ -1,6 +1,6 @@
 [package]
 name = "lockrs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A library that implements egui for Wayland lockscreen surfaces"
 license = "MIT OR Apache-2.0"
@@ -34,3 +34,6 @@ image = { version = "0.25", features = ["jpeg", "png"] }
 egui_extras = { version = "0.36.1", features = ["image"] }
 
 chrono = "0.4.45"
+
+[dev-dependencies]
+egui_alignments = { version = "0.3.9", git = "https://github.com/confused-ace-noises/egui_alignments" }

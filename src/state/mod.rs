@@ -1,3 +1,5 @@
+//! [`App`]- and [`State`]-related functionality
+
 use std::{collections::HashMap, ffi::CStr, mem, os::raw::c_char, sync::Mutex};
 
 use egui::{Context, Modifiers, Ui};
@@ -25,40 +27,85 @@ pub mod seat;
 pub mod session_lock;
 pub mod wl_registry;
 
+
+/// App is the main way that information avaliable through the life of 
+/// the program is stored. 
+/// 
+/// # Initializing App manually
+/// if you need to initialized App manually (i.e., not calling [`App::init`]), 
+/// you must uphold 
 pub struct App {
+    /// connection to the wayland compositor
     pub connection: Connection,
+    /// event queue for the wayland client
     pub event_queue: EventQueue<State>,
+    /// wayland display
     pub display: WlDisplay,
+    /// the [`App`] state, that tracks globals 
+    /// and other changing app state
     pub state: State,
 }
 
-#[derive(Default)]
+/// The state of [`App`]
 pub struct State {
+    /// wl_compositor global
     pub compositor: Late<Global<WlCompositor>>,
-    pub display_handle: Late<WaylandDisplayH>,
+    
+    /// display handle
+    pub display_handle: WaylandDisplayH,
 
+    /// seats stored as (global_name, [`Seat`])
     pub seats: HashMap<u32, Seat>,
+
+    /// input state
     pub input: Late<Input>,
 
+    /// wgpu state
     pub wgpu: Late<WgpuInfo>,
+
+    /// egui renderer
     pub egui_renderer: Late<Mutex<Renderer>>,
 
+    /// ext_session_lock_manager_v1 global
     pub lock_manager: Late<Global<ExtSessionLockManagerV1>>,
+    
+    /// ext_session_lock_v1 protocol
     pub session_lock: Late<ExtSessionLockV1>,
 
+    /// seats stored as (global_name, [`Output`])
     pub outputs: HashMap<u32, Output>,
+    
+    /// has finished initiatilization. If this is set to true, all 
+    /// [`Late`]-wrapped globals and states have been initialized and are
+    /// now freely dereferenceable. This is only set by [`App::init`], and if you
+    /// don't use it (and instead manually initialized the [`State`]), you should set 
+    /// this to true once you've asserted all [`Late`]s have been initialized.
     pub init_done: bool,
+
+    /// exit with exit code
     pub exit: Option<u32>,
 
+    /// whether the lock screen is currently activated
     pub is_locked: bool,
+    
+    /// new events happened; if this is set to true, it'll force a render
+    /// on the next frame
     pub new_events: bool,
+
+    /// PAM state
     pub pam: Late<Pam>,
 }
 
 impl State {
     pub const DOTS_PER_LINE: f32 = 15.0;
+    pub fn new(display_handle: WaylandDisplayH) -> Self {
+        Self { compositor: Late::uninit(), display_handle, seats: HashMap::new(), input: Late::uninit(), wgpu: Late::uninit(), egui_renderer: Late::uninit(), lock_manager: Late::uninit(), session_lock: Late::uninit(), outputs: HashMap::new(), init_done: false, exit: None, is_locked: false, new_events: false, pam: Late::uninit() }
+    } 
 }
 
+/// PAM data returned by `getpwuid_r` call.
+/// 
+/// Initialized by [`App::init_pam`].
 pub struct Pam {
     pub uid: u32,
     _buffer: Vec<i8>,
@@ -67,10 +114,13 @@ pub struct Pam {
     pub username: String,
 }
 
+/// Input data.
+/// 
+/// Initialized by [`App::init_input`]
 pub struct Input {
-    xkb_ctx: xkb::Context,
-    pointer: Option<Pointer>,
-    keyboard: Option<Kb>,
+    pub xkb_ctx: xkb::Context,
+    pub pointer: Option<Pointer>,
+    pub keyboard: Option<Kb>,
 }
 
 pub struct Kb {
@@ -87,10 +137,12 @@ pub struct Pointer {
     pub last_pointer_pos: Option<(f32, f32)>,
 }
 
+/// representation of a pointer event, that splits events in
+/// normal events and Axis events, because the latter are usually in logical batches.
 pub enum PointerEvent {
     Event(wl_pointer::Event),
     Axis {
-        ordered_ev: Vec<wl_pointer::Event>,
+        ordered_events: Vec<wl_pointer::Event>,
         source: Option<wl_pointer::AxisSource>,
         /// bitfield:
         /// 0b00000001 -> Axis
@@ -114,22 +166,56 @@ pub struct EguiInfo {
 }
 
 impl App {
+    /// creates a connection to the compositor and initializes globls 
+    /// during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// </br>
+    /// </br>
+    /// When manually initializing [`App`], remember to set 
+    /// `state.init_done` to true once every [`State`] element has been initialized.
+    /// 
+    /// ## Init order
+    /// The proper init order is the following:
+    /// ```no_run
+    /// let mut app = App::_init();
+    /// unsafe {
+    ///     app.create_surfaces();
+    ///     app.init_wgpu();
+    ///     app.init_egui();
+    ///     app.init_input();
+    ///     app.init_pam();
+    ///     app.image_capabilities();
+    /// }
+    /// app.state.init_done = true;
+    //// ```
+    /// 
+    /// # Initializes
+    /// IF the compositor advertises the proper globals, it will initialize:
+    /// - `state.compositor`
+    /// - `state.lock_manager`
+    /// - `state.outputs`, where for output in `state.outputs`, these are uninitialized: 
+    ///   `output.egui_context`, `output.surface_info`, `output.display_name`
+    /// 
+    /// otherwise, it will panic.
     pub fn _init() -> App {
         let conn = Connection::connect_to_env().expect("Couldn't connect to wayland server");
 
         let mut event_queue = conn.new_event_queue::<State>();
         let qh = event_queue.handle();
 
-        let mut state = State::default();
+        let display_handle = WaylandDisplayH::new(&conn);
+        let mut state = State::new(display_handle);
 
         let display = conn.display();
         let _registry = display.get_registry(&qh, ());
 
         event_queue.roundtrip(&mut state).unwrap(); // globals
 
-        assert!(state.compositor.is_init());
-
-        state.init_done = true;
+        assert!(state.compositor.is_init() && state.lock_manager.is_init(), "globals failed to init. The compositor doesn't support the needed globals. If it does, report this.");
+        
+        if state.outputs.is_empty() {
+            eprintln!("WARNING: no outputs were advertised by the compositor")
+        }
 
         App {
             connection: conn,
@@ -138,25 +224,42 @@ impl App {
             display,
         }
     }
-
+    
+    /// Initializes [`App`].
+    /// 
+    /// If you wish to manually initialize [`App`], refer to [`App::_init`]
     pub fn init() -> App {
         let mut app = App::_init();
         
-        app.create_surfaces();
-        app.init_wgpu();
-        app.init_egui();
-        app.init_input();
-        app.init_pam();
-        app.image_capabilities();
-        
+        unsafe {
+            app.create_surfaces();
+            app.init_wgpu();
+            app.init_egui();
+            app.init_input();
+            app.init_pam();
+            app.init_image_capabilities();
+        }
+
+        app.state.init_done = true;
+
         app
     }
 
-    pub fn create_surfaces(&mut self) {
+    /// creates surfaces during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// 
+    /// # Initializes
+    /// - `state.session_lock`
+    /// - for output in `state.outputs`, `output.surface_info`, where: 
+    ///   - `output.surface_info.width` and `output.surface_info.height` are initialized via a compositor configure event; 
+    ///   - `output.surface_info.wgpu_surface` is uninitialized.
+    /// 
+    /// # Safety
+    /// This assumes that the `state.compositor` and `state.lock_manager` [`Late`] globals have 
+    /// been initialized. It is UB to call this function without asserting that they are.
+    /// This also assumes that `state.outputs` has been populated.
+    pub unsafe fn create_surfaces(&mut self) {
         let qh = self.event_queue.handle();
-        let display_handle = WaylandDisplayH::new(&self.connection);
-
-        self.state.display_handle.init(display_handle);
 
         let compositor = &self.state.compositor;
         let session_lock_manager = &self.state.lock_manager;
@@ -184,7 +287,19 @@ impl App {
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
 
-    pub fn init_input(&mut self) {
+    /// initializes input and seat data during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// 
+    /// # Initializes
+    /// - `state.input`
+    /// - for `seat` in `state.seats`, if `seat.capabilities` is [`Option::Some`], any of:
+    ///     - `state.input.keyboard`, where `state.input.keyboard.xkb_state` is uninitialized;
+    ///     - `state.input.pointer`
+    /// 
+    /// # Safety
+    /// This assumes that the for `output` in `state.outputs`, `output.surface_info` has 
+    /// been initialized. It is UB to call this function without asserting that it is.
+    pub unsafe fn init_input(&mut self) {
         self.state.input.init(Input {
             xkb_ctx: xkb::Context::new(xkb::CONTEXT_NO_FLAGS),
             pointer: None,
@@ -224,9 +339,19 @@ impl App {
 
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
-
-    pub fn init_wgpu(&mut self) {
-        let instance = wgpu::Instance::new(Self::wgpu_instance_desc(*self.state.display_handle));
+     
+    /// initializes wgpu data during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// 
+    /// # Initializes
+    /// - state.wgpu
+    /// - for `output` in `state.outputs`, `output.surface_info.wgpu_surface` 
+    /// 
+    /// # Safety
+    /// This assumes that for `output` in `state.outputs`, `output.surface_info` has 
+    /// been initialized. It is UB to call this function without asserting that it is.
+    pub unsafe fn init_wgpu(&mut self) {
+        let instance = wgpu::Instance::new(Self::wgpu_instance_desc(self.state.display_handle));
 
         for output in self.state.outputs.values_mut() {
             let wgpu_surface = instance
@@ -298,7 +423,18 @@ impl App {
         }
     }
 
-    pub fn init_egui(&mut self) {
+    /// initializes egui data during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// 
+    /// # Initializes
+    /// - `state.egui_renderer`
+    /// - for `output` in `state.outputs`, `output.egui_context` 
+    /// 
+    /// # Safety
+    /// This assumes that state.wgpu has been initialized. It is UB to call 
+    /// this function without asserting that it is.
+    /// It also assumes that `state.outputs` ahs already been populated.
+    pub unsafe fn init_egui(&mut self) {
         for output in self.state.outputs.values_mut() {
             let ctx = Context::default();
             ctx.input_mut(|x| x.max_texture_side = 8000);
@@ -314,23 +450,25 @@ impl App {
         self.state.egui_renderer.init(Mutex::new(renderer));
     }
 
-    pub fn send_frame_req(&mut self) {
-        let qh = self.event_queue.handle();
-
-        for output in self.state.outputs.values() {
-            output.surface_info.surface.frame(&qh, ());
-        }
-        self.event_queue.roundtrip(&mut self.state).unwrap();
-    }
-
-    pub fn image_capabilities(&mut self) {
+    /// initializes the egui image loaders during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// 
+    /// # Safety
+    /// This assumes that for `output` in `state.outputs`, `output.egui_context` has 
+    /// been initialized. It is UB to call this function without asserting that it is.
+    /// It also assumes that `state.outputs` ahs already been populated.
+    pub unsafe fn init_image_capabilities(&mut self) {
         for output in self.state.outputs.values() {
             egui_extras::install_image_loaders(&output.egui_context)
-            // output.egui_context.options_mut(|x| x);
         }
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
 
+    /// initializes PAM data during [`App`] init. This is normally called by [`App::init`], 
+    /// but may be called manually if initializing [`App`] manually.
+    /// 
+    /// # Initializes
+    /// - `state.pam`
     pub fn init_pam(&mut self) {
         let uid = unsafe { getuid() };
         let mut pwd: passwd = unsafe { mem::zeroed() };
@@ -360,6 +498,17 @@ impl App {
         }
     }
 
+    /// send a frame request to the compositor for each output.
+    pub fn send_frame_req(&mut self) {
+        let qh = self.event_queue.handle();
+
+        for output in self.state.outputs.values() {
+            output.surface_info.surface.frame(&qh, ());
+        }
+        self.event_queue.roundtrip(&mut self.state).unwrap();
+    }
+
+    /// render a frame to a specific output name.
     pub fn frame_to_output(&mut self, output_name: u32, run_ui: impl for<'a> FnMut(&'a mut Ui)) -> Option<()> {
         let device = &self.state.wgpu.device;
         let output = self.state.outputs.get_mut(&output_name)?;
@@ -494,23 +643,7 @@ impl Dispatch<WlOutput, u32> for State {
         }
     }
 }
-// impl Dispatch<WlBuffer, ()> for App {
-//     fn event(
-//         state: &mut Self,
-//         proxy: &WlBuffer,
-//         event: <WlBuffer as Proxy>::Event,
-//         data: &(),
-//         conn: &Connection,
-//         qhandle: &QueueHandle<Self>,
-//     ) {
-//         match event {
-//             wayland_client::protocol::wl_buffer::Event::Release => {
 
-//             },
-//             _ => todo!(),
-//         }
-//     }
-// }
 delegate_noop!(State: ignore WlBuffer);
 
 impl Dispatch<WlCallback, ()> for State {

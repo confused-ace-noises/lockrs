@@ -1,3 +1,82 @@
+//! # Lockrs
+//! ![MIT or Apache 2.0 Licensed](https://img.shields.io/badge/license-MIT_OR_Apache%202.0-blue?style=for-the-badge)
+//! 
+//! Lockrs is a library that allows egui to render to a lock screen through the `ext-session-lock-v1` protocol. It also allows for different output on different monitors.
+//! 
+//! ## Why?
+//! Lockrs aims to be a scaffold for screen lockers, NOT a screen locker in of itself. You may also need to get into the fields of the library's types, if you need to do fancy stuff. 
+//! So, the whole reason for this project's existence isn't to provide a ready-to-use lockscreen, but to be a way to make the most customizable lockscreen possible without going to down to protocol primitives.
+//! 
+//! ## How?
+//! 
+//! To use the library, you first need to initialize the `App` struct through the `init` method. This will connect to the compositor, handle the surfaces, initialize `wgpu` and `egui` and handle the low-level stuff, in general. Once you init the `App` struct, you can use the `ui` method to talk to `egui`.
+//! 
+//! Note: it's heavily recommended to compile this crate with `opt-level = 3`, because the image loading that egui does for the background, for example, is ***significanlty*** sped up (a few seconds to a few milliseconds). This may achieved by manually setting the `opt-level` for the desidered profile in the `Cargo.toml`, or compiling with the `--release` flag.
+//! 
+//! ## Example
+//! This is my personal lock screen:
+//! ```rs
+//! // ---- deps ----
+//! // note: this example is also dependent on egui_alignments = "0.3.8"
+//! use egui::{Color32, Image, include_image};
+//! use lockrs::prelude::*;
+//! // ---- deps ----
+//! 
+//! // main
+//! let mut app = App::init();
+//! 
+//! let mut password = String::new();
+//! 
+//! app.ui(|_output_name, ui, exit| {
+//!     egui::CentralPanel::default()
+//!         .frame(egui::Frame::NONE)
+//!         .show(ui, |ui| {
+//!             Image::new(include_image!("path/to/background")).paint_at(ui, ui.ctx().content_rect());
+//! 
+//!             center_vertical(ui, |ui| {
+//!                 ui.vertical_centered(|ui| {
+//!                     ui.add(
+//!                         widgets::Clock::new()
+//!                             .time_style(|rich_text| rich_text.size(81.0).color(Color32::BLACK))
+//!                             .date_style(|rich_text| rich_text.size(27.0).color(Color32::BLACK)),
+//!                     );
+//! 
+//!                     ui.add(
+//!                         egui::TextEdit::singleline(&mut password)
+//!                             .desired_width(300.0)
+//!                             .hint_text("Password...")
+//!                             .horizontal_align(egui::Align::Center)
+//!                             .password(true),
+//!                     );
+//! 
+//!                     if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+//!                         *exit = TryExit::Force
+//!                     } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+//!                         *exit = TryExit::PasswdCheck(password.clone())
+//!                     }
+//!                 })
+//!             })
+//!         });
+//! });
+//! ```
+//! 
+//! this code will produce the following output:
+//! ![screenshot of lockrs' output](.assets/screenshot.png)
+//! 
+//! ## Usage
+//! To use this library, simply add it in the dependencies of your Rust project:
+//! ```toml
+//! # Cargo.toml
+//! 
+//! [dependencies]
+//! lockrs = "0.3.0" # put latest version here
+//! 
+//! egui = "0.36.1"
+//! ```
+//! 
+//! ### Updates
+//! This library may be updated in the future, so if it does happen, the API will probably change a bit until it's in a more stable situation.
+
 use std::{ffi::c_void, mem, ptr::NonNull};
 
 use egui::Ui;
@@ -61,11 +140,13 @@ pub struct SurfaceInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// thin wrapper around [`WaylandDisplayHandle`]
 pub struct WaylandDisplayH(WaylandDisplayHandle);
 
 impl WaylandDisplayH {
-    // this can be meaningfull 'static because the backend of the Connection will be alive for the
+    // this can be meaningfully 'static because the backend of the Connection will be alive for the
     // program's duration
+    /// create a new [`WaylandDisplayH`] from a compositor connection.
     pub fn new(conn: &Connection) -> Self {
         Self(WaylandDisplayHandle::new(
             NonNull::new(conn.backend().display_ptr() as *mut c_void).unwrap(),
@@ -73,9 +154,11 @@ impl WaylandDisplayH {
     }
 }
 
+
 impl HasDisplayHandle for WaylandDisplayH {
-    // this is meaningfully 'static because the backend of the connection used
-    // lives for the entirety of the program
+    /// gets a 'static borrow to the [`DisplayHandle`].s
+    /// this is meaningfully 'static because the backend of the connection used
+    /// lives for the entirety of the program
     fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'static>, raw_window_handle::HandleError> {
         Ok(unsafe { DisplayHandle::borrow_raw(RawDisplayHandle::Wayland(self.0)) })
     }
@@ -85,9 +168,11 @@ unsafe impl Send for WaylandDisplayH {}
 unsafe impl Sync for WaylandDisplayH {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// thin wrapper around [`WaylandWindowHandle`]
 pub struct WaylandSurfaceH(WaylandWindowHandle);
 
 impl WaylandSurfaceH {
+    /// create a new [`WaylandSurfaceH`] from a [`WlSurface`]
     pub fn new(wl_surface: &WlSurface) -> Self {
         Self(WaylandWindowHandle::new(
             NonNull::new(wl_surface.id().as_ptr() as *mut c_void).unwrap(),
@@ -109,6 +194,12 @@ impl HasWindowHandle for WaylandSurfaceH {
 unsafe impl Send for WaylandSurfaceH {}
 unsafe impl Sync for WaylandSurfaceH {}
 
+
+/// describes how to try to exit the lockscreen:
+/// - [`TryExit::None`]: don't try to exit the lockscreen.
+/// - [`TryExit::Force`]: force the lockscreen to exit without doing a password check.
+/// - [`TryExit::PasswdCheck`]: pass a [`String`]; if it matches the password,
+///   the lockscreen will exit, otherwise assume that the password check failed. 
 pub enum TryExit {
     None,
     Force, 
@@ -116,7 +207,19 @@ pub enum TryExit {
 }
 
 impl App {
-    pub fn ui(&mut self, mut output_fn: impl for<'a> FnMut(&String, &'a mut Ui) -> TryExit) {
+    
+    /// Run egui.
+    /// 
+    /// The `output_fn` has three arguments: 
+    /// 1. the wayland name for the output being rendered to currently. 
+    ///    This also means that you can render different things for different outputs
+    ///    by matching on their names.
+    /// 2. the egui ui handle.
+    /// 3. a mutable reference to a [`TryExit`]. This is by defualt [`TryExit::None`]. 
+    ///    it to control how the lock screen should exit (note: this pointer points to a different
+    ///    TryExit for each output. If different [`TryExit::PasswdCheck`] are set for 
+    ///    different output passes, only the last one will be considered.)
+    pub fn ui<F: for<'a> FnMut(&String, &'a mut Ui, &mut TryExit)>(&mut self, mut output_fn: F) {
         let mut should_break: bool;
         let mut should_auth: Option<String>;
 
@@ -132,7 +235,7 @@ impl App {
                 let display_name = &*output.display_name;
                 
                 let run_ui = coerce_hrtb(|ui| {
-                    exit = output_fn(display_name, ui);
+                    output_fn(display_name, ui, &mut exit);
                 });
 
                 {
@@ -237,6 +340,7 @@ impl App {
                 }
             }
 
+            // split to ensure short-circuiting behavior on should_break
             if should_break {
                 break;
             } else if let Some(pwd) = should_auth && self.pam_auth(&pwd) {

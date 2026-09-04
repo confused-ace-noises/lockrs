@@ -190,6 +190,7 @@ impl Dispatch<WlKeyboard, ()> for State {
                 }
             }
 
+            // welllllllll actualllyyyy i dont wanna :p
             wl_keyboard::Event::RepeatInfo { .. } => {} // TODO: do repeating
             _ => {}
         }
@@ -259,7 +260,7 @@ impl Dispatch<WlPointer, ()> for State {
                     let output = output(state);
 
                     let PointerEvent::Axis {
-                        mut ordered_ev,
+                        ordered_events: mut ordered_ev,
                         mut source,
                         mut available_modes,
                         mut is_stop
@@ -273,7 +274,7 @@ impl Dispatch<WlPointer, ()> for State {
                             }
                         })
                         .unwrap_or(PointerEvent::Axis {
-                            ordered_ev: Vec::new(),
+                            ordered_events: Vec::new(),
                             source: None,
                             available_modes: 0,
                             is_stop: None,
@@ -301,7 +302,7 @@ impl Dispatch<WlPointer, ()> for State {
                     }
                     ordered_ev.push(event);
                     output.pointer_events.push(PointerEvent::Axis {
-                        ordered_ev,
+                        ordered_events: ordered_ev,
                         source,
                         available_modes,
                         is_stop
@@ -391,7 +392,7 @@ impl Dispatch<WlPointer, ()> for State {
                     },
 
                     PointerEvent::Axis {
-                        ordered_ev,
+                        ordered_events: ordered_ev,
                         source,
                         available_modes,
                         is_stop

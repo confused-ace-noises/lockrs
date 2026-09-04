@@ -27,26 +27,20 @@ let mut app = App::init();
 
 let mut password = String::new();
 
-app.ui(|output_name, ui| {
+app.ui(|_output_name, ui, exit| {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show_inside(ui, |ui| {
-            // bg image: change to your desired image. 
-            // See note on "how?" section of README for slow loading times.
-            Image::new(include_image!("../wallhaven-sails.jpg"))
-                .paint_at(ui, ui.ctx().content_rect());
+        .show(ui, |ui| {
+            Image::new(include_image!("path/to/background")).paint_at(ui, ui.ctx().content_rect());
 
-            // note: this example is also dependent on egui_alignments = "0.3.8"
-            egui_alignments::center_vertical(ui, |ui| {
+            center_vertical(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    // clock
                     ui.add(
                         widgets::Clock::new()
-                            .time_style(|t| t.size(81.0).color(Color32::BLACK))
-                            .date_style(|t| t.size(27.0).color(Color32::BLACK)),
+                            .time_style(|rich_text| rich_text.size(81.0).color(Color32::BLACK))
+                            .date_style(|rich_text| rich_text.size(27.0).color(Color32::BLACK)),
                     );
 
-                    // text input
                     ui.add(
                         egui::TextEdit::singleline(&mut password)
                             .desired_width(300.0)
@@ -56,22 +50,13 @@ app.ui(|output_name, ui| {
                     );
 
                     if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                        // if ESC is pressed, the lockscreen will always exit. this is to avoid
-                        // locking oneself out of the computer while developing the lockscreen.
-                        TryExit::Force
+                        *exit = TryExit::Force
                     } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                        // if ENTER is pressed, the password will be checked, and in case of success,
-                        // the screen locker will be exited.
-                        TryExit::PasswdCheck(password.clone())
-                    } else {
-                        TryExit::None
+                        *exit = TryExit::PasswdCheck(password.clone())
                     }
                 })
             })
-        })
-        .inner
-        .inner
-        .inner
+        });
 });
 ```
 
@@ -84,14 +69,13 @@ To use this library, simply add it in the dependencies of your Rust project:
 # Cargo.toml
 
 [dependencies]
-lockrs = "0.2.0" # put latest version here
+lockrs = "0.3.0" # put latest version here
 
-# note: lockrs depends on egui 0.34.3, NOT the latest version.
-egui = "0.34.3"
+egui = "0.36.1"
 ```
 
 ### Updates
-This library may be updated in the future, so if it does happen, the API will probably change a bit.
+This library may be updated in the future, so if it does happen, the API will probably change a bit until it's in a more stable situation.
 
 #### License
 <small>
