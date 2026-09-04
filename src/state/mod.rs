@@ -187,7 +187,7 @@ impl App {
     ///     app.image_capabilities();
     /// }
     /// app.state.init_done = true;
-    //// ```
+    /// ```
     /// 
     /// # Initializes
     /// IF the compositor advertises the proper globals, it will initialize:
