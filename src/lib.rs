@@ -96,25 +96,47 @@ pub mod state;
 pub mod utils;
 pub mod widgets;
 
+/// wayland seat representation.
 pub struct Seat {
+    /// wl_seat global
     pub wl_seat: WlSeat,
+    /// seat capabilities, if any
     pub capabilities: Option<WEnum<Capability>>,
+    /// name of this seat
     pub name: Option<String>,
 }
 
+/// in-library output representation, containing the 
+/// data about the output global itself and the data to 
+/// render to said output
 pub struct Output {
+    /// egui context for this output
     pub egui_context: Late<egui::Context>,
+    /// pending egui events for this output
     pub events_to_flush: Vec<egui::Event>,
+    /// pending pointer events for this output
     pub pointer_events: Vec<PointerEvent>,
+    /// index of the last treated axis event in the pointer events
     pub last_pointer_axis_event: Option<usize>,
+    /// wl_output global
     pub wl_output: WlOutput,
+    /// information about the surface that occupies this output
     pub surface_info: Late<SurfaceInfo>,
+    /// name of the output global
     pub name: u32,
+    /// human-readable name of the output, passed to the function
+    /// passed to [App::ui]. 
     pub display_name: Late<String>,
+    /// whether the ext_session_lock_surface_v1 surface has gotten a
+    /// configure event
     pub configured: bool,
 }
 
 impl Output {
+    /// create a new output that has the following fields uninitialized:
+    /// - `egui_context`
+    /// - `surface_info`
+    /// - `display_name`
     pub fn new_uninit(wl_output: WlOutput, name: u32) -> Self {
         Self {
             egui_context: Late::uninit(),
@@ -130,6 +152,7 @@ impl Output {
     }
 }
 
+/// information about the surface of an output
 pub struct SurfaceInfo {
     pub surface: WlSurface,
     pub lock_surface: ExtSessionLockSurfaceV1,

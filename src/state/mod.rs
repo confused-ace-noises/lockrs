@@ -33,7 +33,8 @@ pub mod wl_registry;
 /// 
 /// # Initializing App manually
 /// if you need to initialized App manually (i.e., not calling [`App::init`]), 
-/// you must uphold 
+/// you must set `state.init_done` to true once every [`State`] element has been initialized.
+/// See the [`App::_init`] documentation for further information
 pub struct App {
     /// connection to the wayland compositor
     pub connection: Connection,
