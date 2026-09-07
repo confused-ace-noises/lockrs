@@ -16,11 +16,8 @@
 //! ## Example
 //! This is my personal lock screen:
 //! ```rs
-//! // ---- deps ----
-//! // note: this example is also dependent on egui_alignments = "0.3.8"
 //! use egui::{Color32, Image, include_image};
 //! use lockrs::prelude::*;
-//! // ---- deps ----
 //! 
 //! // main
 //! let mut app = App::init();

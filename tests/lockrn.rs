@@ -1,5 +1,5 @@
 use egui::{Color32, Image, include_image};
-use lockrs::prelude::*;
+use lockrs::{prelude::*, widgets::{FailureTextLocation, PasswordTextEdit, Uptime}};
 
 use egui_alignments::center_vertical;
 
@@ -12,6 +12,7 @@ fn lockrn() {
     let mut app = App::init();
 
     let mut password = String::new();
+    let mut has_failed = false;
 
     app.ui(|_output_name, ui, exit| {
         egui::CentralPanel::default()
@@ -28,17 +29,22 @@ fn lockrn() {
                         );
 
                         ui.add(
-                            egui::TextEdit::singleline(&mut password)
-                                .desired_width(300.0)
-                                .hint_text("Password...")
-                                .horizontal_align(egui::Align::Center)
-                                .password(true),
+                            PasswordTextEdit::new(&mut password, &mut has_failed)
+                                .modify_textedit(|t| {
+                                    t.desired_width(300.0)
+                                        .horizontal_align(egui::Align::Center)
+                                })
+                                .modify_failure_text(|t| t.size(20.0))
+                                .set_fail_text_location(FailureTextLocation::Bottom(egui::Align::Center))
                         );
+
+                        ui.add(Uptime::new());
 
                         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                             *exit = TryExit::Force
                         } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                            *exit = TryExit::PasswdCheck(password.clone())
+                            *exit = TryExit::PasswdCheck(password.clone());
+                            has_failed = true; // if it doesn't pass immediately, it failed and won't come off again
                         }
                     })
                 })
