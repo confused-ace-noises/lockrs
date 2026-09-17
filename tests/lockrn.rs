@@ -1,3 +1,5 @@
+use std::{path::PathBuf, str::FromStr};
+
 use egui::{Color32, Image, include_image};
 use lockrs::{prelude::*, widgets::{FailureTextLocation, PasswordTextEdit, Uptime}};
 
@@ -41,10 +43,13 @@ fn lockrn() {
                         ui.add(Uptime::new());
 
                         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                            *exit = TryExit::Force
+                            *exit = Action::TakeScreenshot(PathBuf::from_str("screenshot.png").unwrap());
+                            println!("taken screenshot");
                         } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                            *exit = TryExit::PasswdCheck(password.clone());
+                            *exit = Action::PasswdCheck(password.clone());
                             has_failed = true; // if it doesn't pass immediately, it failed and won't come off again
+                        } else if ui.input(|input| input.key_pressed(egui::Key::End)) {
+                            *exit = Action::ForceExit;
                         }
                     })
                 })

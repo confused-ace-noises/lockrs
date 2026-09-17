@@ -47,9 +47,9 @@
 //!                     );
 //! 
 //!                     if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-//!                         *exit = TryExit::Force
+//!                         *exit = Action::Force
 //!                     } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-//!                         *exit = TryExit::PasswdCheck(password.clone())
+//!                         *exit = Action::PasswdCheck(password.clone())
 //!                     }
 //!                 })
 //!             })
@@ -74,7 +74,7 @@
 //! ### Updates
 //! This library may be updated in the future, so if it does happen, the API will probably change a bit until it's in a more stable situation.
 
-use std::{ffi::c_void, mem, ptr::NonNull};
+use std::{cell::RefCell, collections::VecDeque, ffi::c_void, path::PathBuf, ptr::NonNull, rc::Rc};
 
 use egui::Ui;
 use raw_window_handle::{
@@ -86,8 +86,8 @@ use wayland_client::{
     }
 };
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::ExtSessionLockSurfaceV1;
-use wgpu::{CurrentSurfaceTexture, Operations, Surface as WgpuSurface, TextureViewDescriptor};
-use crate::{state::{App, PointerEvent}, utils::late::Late};
+use wgpu::{Surface as WgpuSurface, SurfaceTarget};
+use crate::{state::{App, FrameContext, PointerEvent}, utils::late::Late};
 
 pub mod state;
 pub mod utils;
@@ -123,7 +123,7 @@ pub struct Output {
     pub name: u32,
     /// human-readable name of the output, passed to the function
     /// passed to [App::ui]. 
-    pub display_name: Late<String>,
+    pub display_name: Late<Rc<String>>,
     /// whether the ext_session_lock_surface_v1 surface has gotten a
     /// configure event
     pub configured: bool,
@@ -215,14 +215,16 @@ unsafe impl Send for WaylandSurfaceH {}
 unsafe impl Sync for WaylandSurfaceH {}
 
 
-/// describes how to try to exit the lockscreen:
-/// - [`TryExit::None`]: don't try to exit the lockscreen.
-/// - [`TryExit::Force`]: force the lockscreen to exit without doing a password check.
-/// - [`TryExit::PasswdCheck`]: pass a [`String`]; if it matches the password,
-///   the lockscreen will exit, otherwise assume that the password check failed. 
-pub enum TryExit {
+/// describes an action for the lockscreen:
+/// - [`Action::None`]: don't try to exit the lockscreen.
+/// - [`Action::ForceExit`]: force the lockscreen to exit without doing a password check.
+/// - [`Action::PasswdCheck`]: pass a [`String`]; if it matches the password,
+///   the lockscreen will exit, otherwise assume that the password check failed.
+/// - [`Action::TakeScreenshot`]: pass a [`PathBuf`], and a screenshot of the lockscreen
+pub enum Action {
     None,
-    Force, 
+    TakeScreenshot(PathBuf),
+    ForceExit, 
     PasswdCheck(String),
 }
 
@@ -235,13 +237,14 @@ impl App {
     ///    This also means that you can render different things for different outputs
     ///    by matching on their names.
     /// 2. the egui ui handle.
-    /// 3. a mutable reference to a [`TryExit`]. This is by defualt [`TryExit::None`]. 
+    /// 3. a mutable reference to a [`Action`]. This is by defualt [`Action::None`]. 
     ///    it to control how the lock screen should exit (note: this pointer points to a different
-    ///    TryExit for each output. If different [`TryExit::PasswdCheck`] are set for 
+    ///    Action for each output. If different [`Action::PasswdCheck`] are set for 
     ///    different output passes, only the last one will be considered.)
-    pub fn ui<F: for<'a> FnMut(&String, &'a mut Ui, &mut TryExit)>(&mut self, mut output_fn: F) {
+    pub fn ui<F: for<'a> FnMut(&String, &'a mut Ui, &mut Action)>(&mut self, mut output_fn: F) {
         let mut should_break: bool;
         let mut should_auth: Option<String>;
+        let mut should_recreate_surface = VecDeque::new();
 
         loop {
             should_break = false;
@@ -250,113 +253,45 @@ impl App {
             self.send_frame_req();
 
             for output in self.state.outputs.values_mut() {
-                let mut exit: TryExit = TryExit::None;
-
-                let display_name = &*output.display_name;
-                
-                let run_ui = coerce_hrtb(|ui| {
-                    output_fn(display_name, ui, &mut exit);
-                });
-
-                {
-                    let device = &self.state.wgpu.device;
-                    // let output = output;
-                    let wgpu_surface = &output.surface_info.wgpu_surface;
-                    let ctx = &output.egui_context;
-
-                    let qh = &self.event_queue.handle();
-
-                    output.surface_info.surface.frame(qh, ());
-
-                    let width = *output.surface_info.width;
-                    let height = *output.surface_info.height;
-
-                    if !(self.state.new_events || output.egui_context.has_requested_repaint()) {
-                        continue;
-                    }
-
-                    let surface_texture = match wgpu_surface.get_current_texture() {
-                        CurrentSurfaceTexture::Success(texture) => texture,
-                        CurrentSurfaceTexture::Suboptimal(texture) => {
-                            // wgpu_surface.configure(&self.state.wgpu.device, &Self::wgpu_surface_config(width, height));
-                            texture
-                        }
-                        _ => continue,
-                    };
-
-                    let mut encoder = device.create_command_encoder(&Default::default());
-
-                    let view = surface_texture
-                        .texture
-                        .create_view(&TextureViewDescriptor::default());
-
-                    let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                        size_in_pixels: [width, height],
-                        pixels_per_point: ctx.pixels_per_point(),
-                    };
-
-                    let raw_input = egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::Vec2::new(width as f32, height as f32),
-                        )),
-                        events: mem::take(&mut output.events_to_flush),
-                        ..Default::default()
-                    };
-
-                    let mut full_output = ctx.run_ui(raw_input, run_ui);
-
-                    let primitives = ctx.tessellate(full_output.shapes, ctx.pixels_per_point());
-
-                    let mut renderer = self.state.egui_renderer.lock().unwrap();
-
-                    for (id, delta) in full_output.textures_delta.set.drain() {
-                        for d in &delta {
-                            renderer.update_texture(device, &self.state.wgpu.queue, id, d);
-                        }
-                    }
-
-                    renderer.update_buffers(
-                        device,
-                        &self.state.wgpu.queue,
-                        &mut encoder,
-                        &primitives,
-                        &screen_descriptor,
-                    );
-
-                    let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: Operations::default(),
-                        })],
-                        ..Default::default()
-                    });
-
-                    let mut pass = pass.forget_lifetime();
-                    renderer.render(&mut pass, &primitives, &screen_descriptor);
-
-                    for id in &full_output.textures_delta.free {
-                        renderer.free_texture(id);
-                    }
-
-                    drop(renderer);
-                    drop(pass);
-
-                    self.state.wgpu.queue.submit([encoder.finish()]);
-                    self.state.wgpu.queue.present(surface_texture);
-                    self.event_queue.flush().unwrap();
+                if should_recreate_surface.pop_front_if(|name| output.name == *name).is_some() {
+                    let surface = self.state.wgpu.instance.create_surface(SurfaceTarget::Window(Box::new(
+                        output.surface_info.surface_handle,
+                    ))).unwrap();
+                    output.surface_info.wgpu_surface.init(surface);
                 }
 
-                // drop((output, name));
+                let mut exit: Action = Action::None;
+                
+                let name = (*output.display_name).clone();
+                
+                let screen_path = RefCell::new(None);
 
-                match exit {
-                    TryExit::None => {},
-                    TryExit::Force => should_break = true,
-                    TryExit::PasswdCheck(pwd) => {
-                        should_auth = Some(pwd);
-                    },
+                let run_ui = coerce_hrtb(|ui| {
+                    output_fn(&name, ui, &mut exit);
+
+                    match &exit {
+                        Action::None => {},
+                        Action::TakeScreenshot(path_buf) => {
+                            *screen_path.borrow_mut() = Some(path_buf.clone())
+                        },
+                        Action::ForceExit => should_break = true,
+                        Action::PasswdCheck(passwd) => {
+                            should_auth = Some(passwd.clone())
+                        },
+                    }
+                });
+
+                let context = FrameContext {
+                    wgpu: &self.state.wgpu,
+                    event_queue: &self.event_queue,
+                    new_events: &mut self.state.new_events,
+                    egui_renderer: &self.state.egui_renderer,
+                    take_screenshot: &screen_path
+                };
+
+
+                if state::App::frame_to_output(context, output, run_ui).is_err() {
+                    should_recreate_surface.push_back(output.name);
                 }
             }
 
@@ -379,6 +314,6 @@ fn coerce_hrtb<F: for<'a> FnMut(&'a mut egui::Ui)>(f: F) -> F { f }
 
 pub mod prelude {
     pub use crate::state::App;
-    pub use crate::TryExit;
+    pub use crate::Action;
     pub use crate::widgets;
 }

@@ -49,9 +49,9 @@ app.ui(|_output_name, ui, exit| {
                     );
 
                     if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                        *exit = TryExit::Force
+                        *exit = Action::Force
                     } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                        *exit = TryExit::PasswdCheck(password.clone())
+                        *exit = Action::PasswdCheck(password.clone())
                     }
                 })
             })

@@ -114,6 +114,7 @@ pub enum FailureTextLocation {
 /// 
 /// # Example
 /// ```
+/// # use lockrs::widgets::{PasswordTextEdit, FailureTextLocation};
 /// let mut passwd_string = String::new();
 /// let mut has_failed = false;
 /// 

@@ -1,20 +1,30 @@
 //! [`App`]- and [`State`]-related functionality
 
-use std::{collections::HashMap, ffi::CStr, mem, os::raw::c_char, sync::Mutex};
+use std::{cell::RefCell, collections::HashMap, ffi::CStr, mem, os::raw::c_char, path::PathBuf, rc::Rc, sync::Mutex};
 
 use egui::{Context, Modifiers, Ui};
 use egui_wgpu::{Renderer, RendererOptions};
 use libc::{getpwuid_r, getuid, passwd};
 use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop, protocol::{
-        wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_display::WlDisplay, wl_keyboard::WlKeyboard, wl_output::WlOutput, wl_pointer::{self, WlPointer}, wl_registry::WlRegistry, wl_seat::Capability, wl_surface::WlSurface,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
+    protocol::{
+        wl_buffer::WlBuffer,
+        wl_callback::WlCallback,
+        wl_compositor::WlCompositor,
+        wl_display::WlDisplay,
+        wl_keyboard::WlKeyboard,
+        wl_output::WlOutput,
+        wl_pointer::{self, WlPointer},
+        wl_registry::WlRegistry,
+        wl_seat::Capability,
+        wl_surface::WlSurface,
     },
 };
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1::ExtSessionLockV1,
 };
 use wgpu::{
-    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceColorSpace, SurfaceTarget, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
+    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, Origin3d, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceColorSpace, SurfaceTarget, TexelCopyTextureInfoBase, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
 };
 use xkbcommon::xkb::{self};
 
@@ -27,12 +37,11 @@ pub mod seat;
 pub mod session_lock;
 pub mod wl_registry;
 
-
-/// App is the main way that information avaliable through the life of 
-/// the program is stored. 
-/// 
+/// App is the main way that information avaliable through the life of
+/// the program is stored.
+///
 /// # Initializing App manually
-/// if you need to initialized App manually (i.e., not calling [`App::init`]), 
+/// if you need to initialized App manually (i.e., not calling [`App::init`]),
 /// you must set `state.init_done` to true once every [`State`] element has been initialized.
 /// See the [`App::_init`] documentation for further information
 pub struct App {
@@ -42,7 +51,7 @@ pub struct App {
     pub event_queue: EventQueue<State>,
     /// wayland display
     pub display: WlDisplay,
-    /// the [`App`] state, that tracks globals 
+    /// the [`App`] state, that tracks globals
     /// and other changing app state
     pub state: State,
 }
@@ -51,7 +60,7 @@ pub struct App {
 pub struct State {
     /// wl_compositor global
     pub compositor: Late<Global<WlCompositor>>,
-    
+
     /// display handle
     pub display_handle: WaylandDisplayH,
 
@@ -69,17 +78,17 @@ pub struct State {
 
     /// ext_session_lock_manager_v1 global
     pub lock_manager: Late<Global<ExtSessionLockManagerV1>>,
-    
+
     /// ext_session_lock_v1 protocol
     pub session_lock: Late<ExtSessionLockV1>,
 
     /// seats stored as (global_name, [`Output`])
     pub outputs: HashMap<u32, Output>,
-    
-    /// has finished initiatilization. If this is set to true, all 
+
+    /// has finished initiatilization. If this is set to true, all
     /// [`Late`]-wrapped globals and states have been initialized and are
     /// now freely dereferenceable. This is only set by [`App::init`], and if you
-    /// don't use it (and instead manually initialized the [`State`]), you should set 
+    /// don't use it (and instead manually initialized the [`State`]), you should set
     /// this to true once you've asserted all [`Late`]s have been initialized.
     pub init_done: bool,
 
@@ -88,7 +97,7 @@ pub struct State {
 
     /// whether the lock screen is currently activated
     pub is_locked: bool,
-    
+
     /// new events happened; if this is set to true, it'll force a render
     /// on the next frame
     pub new_events: bool,
@@ -100,12 +109,27 @@ pub struct State {
 impl State {
     pub const DOTS_PER_LINE: f32 = 15.0;
     pub fn new(display_handle: WaylandDisplayH) -> Self {
-        Self { compositor: Late::uninit(), display_handle, seats: HashMap::new(), input: Late::uninit(), wgpu: Late::uninit(), egui_renderer: Late::uninit(), lock_manager: Late::uninit(), session_lock: Late::uninit(), outputs: HashMap::new(), init_done: false, exit: None, is_locked: false, new_events: false, pam: Late::uninit() }
-    } 
+        Self {
+            compositor: Late::uninit(),
+            display_handle,
+            seats: HashMap::new(),
+            input: Late::uninit(),
+            wgpu: Late::uninit(),
+            egui_renderer: Late::uninit(),
+            lock_manager: Late::uninit(),
+            session_lock: Late::uninit(),
+            outputs: HashMap::new(),
+            init_done: false,
+            exit: None,
+            is_locked: false,
+            new_events: false,
+            pam: Late::uninit(),
+        }
+    }
 }
 
 /// PAM data returned by `getpwuid_r` call.
-/// 
+///
 /// Initialized by [`App::init_pam`].
 pub struct Pam {
     pub uid: u32,
@@ -116,7 +140,7 @@ pub struct Pam {
 }
 
 /// Input data.
-/// 
+///
 /// Initialized by [`App::init_input`]
 pub struct Input {
     pub xkb_ctx: xkb::Context,
@@ -167,17 +191,17 @@ pub struct EguiInfo {
 }
 
 impl App {
-    /// creates a connection to the compositor and initializes globls 
-    /// during [`App`] init. This is normally called by [`App::init`], 
+    /// creates a connection to the compositor and initializes globls
+    /// during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
     /// </br>
     /// </br>
-    /// When manually initializing [`App`], remember to set 
+    /// When manually initializing [`App`], remember to set
     /// `state.init_done` to true once every [`State`] element has been initialized.
-    /// 
+    ///
     /// ## Init order
     /// The proper init order is the following:
-    /// ```no_run
+    /// ```ignore
     /// let mut app = App::_init();
     /// unsafe {
     ///     app.create_surfaces();
@@ -189,14 +213,14 @@ impl App {
     /// }
     /// app.state.init_done = true;
     /// ```
-    /// 
+    ///
     /// # Initializes
     /// IF the compositor advertises the proper globals, it will initialize:
     /// - `state.compositor`
     /// - `state.lock_manager`
-    /// - `state.outputs`, where for output in `state.outputs`, these are uninitialized: 
+    /// - `state.outputs`, where for output in `state.outputs`, these are uninitialized:
     ///   `output.egui_context`, `output.surface_info`, `output.display_name`
-    /// 
+    ///
     /// otherwise, it will panic.
     pub fn _init() -> App {
         let conn = Connection::connect_to_env().expect("Couldn't connect to wayland server");
@@ -212,8 +236,11 @@ impl App {
 
         event_queue.roundtrip(&mut state).unwrap(); // globals
 
-        assert!(state.compositor.is_init() && state.lock_manager.is_init(), "globals failed to init. The compositor doesn't support the needed globals. If it does, report this.");
-        
+        assert!(
+            state.compositor.is_init() && state.lock_manager.is_init(),
+            "globals failed to init. The compositor doesn't support the needed globals. If it does, report this."
+        );
+
         if state.outputs.is_empty() {
             eprintln!("WARNING: no outputs were advertised by the compositor")
         }
@@ -225,13 +252,13 @@ impl App {
             display,
         }
     }
-    
+
     /// Initializes [`App`].
-    /// 
+    ///
     /// If you wish to manually initialize [`App`], refer to [`App::_init`]
     pub fn init() -> App {
         let mut app = App::_init();
-        
+
         unsafe {
             app.create_surfaces();
             app.init_wgpu();
@@ -246,17 +273,17 @@ impl App {
         app
     }
 
-    /// creates surfaces during [`App`] init. This is normally called by [`App::init`], 
+    /// creates surfaces during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
-    /// 
+    ///
     /// # Initializes
     /// - `state.session_lock`
-    /// - for output in `state.outputs`, `output.surface_info`, where: 
-    ///   - `output.surface_info.width` and `output.surface_info.height` are initialized via a compositor configure event; 
+    /// - for output in `state.outputs`, `output.surface_info`, where:
+    ///   - `output.surface_info.width` and `output.surface_info.height` are initialized via a compositor configure event;
     ///   - `output.surface_info.wgpu_surface` is uninitialized.
-    /// 
+    ///
     /// # Safety
-    /// This assumes that the `state.compositor` and `state.lock_manager` [`Late`] globals have 
+    /// This assumes that the `state.compositor` and `state.lock_manager` [`Late`] globals have
     /// been initialized. It is UB to call this function without asserting that they are.
     /// This also assumes that `state.outputs` has been populated.
     pub unsafe fn create_surfaces(&mut self) {
@@ -288,17 +315,17 @@ impl App {
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
 
-    /// initializes input and seat data during [`App`] init. This is normally called by [`App::init`], 
+    /// initializes input and seat data during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
-    /// 
+    ///
     /// # Initializes
     /// - `state.input`
     /// - for `seat` in `state.seats`, if `seat.capabilities` is [`Option::Some`], any of:
     ///     - `state.input.keyboard`, where `state.input.keyboard.xkb_state` is uninitialized;
     ///     - `state.input.pointer`
-    /// 
+    ///
     /// # Safety
-    /// This assumes that the for `output` in `state.outputs`, `output.surface_info` has 
+    /// This assumes that the for `output` in `state.outputs`, `output.surface_info` has
     /// been initialized. It is UB to call this function without asserting that it is.
     pub unsafe fn init_input(&mut self) {
         self.state.input.init(Input {
@@ -340,16 +367,16 @@ impl App {
 
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
-     
-    /// initializes wgpu data during [`App`] init. This is normally called by [`App::init`], 
+
+    /// initializes wgpu data during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
-    /// 
+    ///
     /// # Initializes
     /// - state.wgpu
-    /// - for `output` in `state.outputs`, `output.surface_info.wgpu_surface` 
-    /// 
+    /// - for `output` in `state.outputs`, `output.surface_info.wgpu_surface`
+    ///
     /// # Safety
-    /// This assumes that for `output` in `state.outputs`, `output.surface_info` has 
+    /// This assumes that for `output` in `state.outputs`, `output.surface_info` has
     /// been initialized. It is UB to call this function without asserting that it is.
     pub unsafe fn init_wgpu(&mut self) {
         let instance = wgpu::Instance::new(Self::wgpu_instance_desc(self.state.display_handle));
@@ -424,15 +451,15 @@ impl App {
         }
     }
 
-    /// initializes egui data during [`App`] init. This is normally called by [`App::init`], 
+    /// initializes egui data during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
-    /// 
+    ///
     /// # Initializes
     /// - `state.egui_renderer`
-    /// - for `output` in `state.outputs`, `output.egui_context` 
-    /// 
+    /// - for `output` in `state.outputs`, `output.egui_context`
+    ///
     /// # Safety
-    /// This assumes that state.wgpu has been initialized. It is UB to call 
+    /// This assumes that state.wgpu has been initialized. It is UB to call
     /// this function without asserting that it is.
     /// It also assumes that `state.outputs` ahs already been populated.
     pub unsafe fn init_egui(&mut self) {
@@ -451,11 +478,11 @@ impl App {
         self.state.egui_renderer.init(Mutex::new(renderer));
     }
 
-    /// initializes the egui image loaders during [`App`] init. This is normally called by [`App::init`], 
+    /// initializes the egui image loaders during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
-    /// 
+    ///
     /// # Safety
-    /// This assumes that for `output` in `state.outputs`, `output.egui_context` has 
+    /// This assumes that for `output` in `state.outputs`, `output.egui_context` has
     /// been initialized. It is UB to call this function without asserting that it is.
     /// It also assumes that `state.outputs` ahs already been populated.
     pub unsafe fn init_image_capabilities(&mut self) {
@@ -465,9 +492,9 @@ impl App {
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
 
-    /// initializes PAM data during [`App`] init. This is normally called by [`App::init`], 
+    /// initializes PAM data during [`App`] init. This is normally called by [`App::init`],
     /// but may be called manually if initializing [`App`] manually.
-    /// 
+    ///
     /// # Initializes
     /// - `state.pam`
     pub fn init_pam(&mut self) {
@@ -477,26 +504,36 @@ impl App {
         let mut res = std::ptr::null_mut();
 
         unsafe {
-            getpwuid_r(uid, &mut pwd as *mut passwd, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut res);
+            getpwuid_r(
+                uid,
+                &mut pwd as *mut passwd,
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len(),
+                &mut res,
+            );
         }
 
-        let username = unsafe { CStr::from_ptr(pwd.pw_name) }.to_string_lossy().to_string().clone();
+        let username = unsafe { CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .to_string()
+            .clone();
 
-
-        self.state.pam.init(Pam { uid, _buffer: buf, _passwd: pwd, _res: res, username });
+        self.state.pam.init(Pam {
+            uid,
+            _buffer: buf,
+            _passwd: pwd,
+            _res: res,
+            username,
+        });
     }
 
     pub fn pam_auth(&self, passwd: &String) -> bool {
-        let mut pam_client = pam::Client::with_password("login").expect("failed to start PAM client");
-        pam_client.conversation_mut().set_credentials(&self.state.pam.username, passwd);
-        match pam_client.authenticate() {
-            Ok(_) => {
-                true
-            },
-            Err(_) => {
-                false
-            } 
-        }
+        let mut pam_client =
+            pam::Client::with_password("login").expect("failed to start PAM client");
+        pam_client
+            .conversation_mut()
+            .set_credentials(&self.state.pam.username, passwd);
+        pam_client.authenticate().is_ok()
     }
 
     /// send a frame request to the compositor for each output.
@@ -509,31 +546,43 @@ impl App {
         self.event_queue.roundtrip(&mut self.state).unwrap();
     }
 
-    /// render a frame to a specific output name.
-    pub fn frame_to_output(&mut self, output_name: u32, run_ui: impl for<'a> FnMut(&'a mut Ui)) -> Option<()> {
-        let device = &self.state.wgpu.device;
-        let output = self.state.outputs.get_mut(&output_name)?;
+    /// render a frame to a specific output.
+    pub fn frame_to_output<'a>(
+        frame_ctx: FrameContext<'a>,
+        output: &'a mut Output,
+        run_ui: impl for<'b> FnMut(&'b mut Ui),
+        // handle_action: impl for<'c> FnOnce(&'c mut FrameContext<'a>)
+    ) -> Result<(), SurfaceLost> {
+        let device = &frame_ctx.wgpu.device;
+        // let output = frame_ctx.output;
         let wgpu_surface = &output.surface_info.wgpu_surface;
+        let wgpu_queue = &frame_ctx.wgpu.queue;
         let ctx = &output.egui_context;
-
-        let qh = &self.event_queue.handle();
-
-        output.surface_info.surface.frame(qh, ());
 
         let width = *output.surface_info.width;
         let height = *output.surface_info.height;
 
-        if !(self.state.new_events || output.egui_context.has_requested_repaint()) {
-            return Some(());
+        if !(*frame_ctx.new_events || output.egui_context.has_requested_repaint()) {
+            return Ok(());
         }
 
-        let surface_texture = match wgpu_surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(texture) => texture,
-            CurrentSurfaceTexture::Suboptimal(texture) => {
-                // wgpu_surface.configure(&self.state.wgpu.device, &Self::wgpu_surface_config(width, height));
-                texture
-            }
-            _ => return None,
+        *frame_ctx.new_events = false;
+
+        let surface_texture = loop {
+            match wgpu_surface.get_current_texture() {
+                CurrentSurfaceTexture::Success(texture) => break texture,
+                CurrentSurfaceTexture::Suboptimal(texture) => {
+                    drop(texture);
+                    wgpu_surface.configure(device, &Self::wgpu_surface_config(width, height));
+                },
+                CurrentSurfaceTexture::Outdated => {
+                    wgpu_surface.configure(device, &Self::wgpu_surface_config(width, height));
+                },
+                CurrentSurfaceTexture::Timeout 
+                    | CurrentSurfaceTexture::Occluded
+                    | CurrentSurfaceTexture::Validation => return Ok(()),
+                CurrentSurfaceTexture::Lost => return Err(SurfaceLost),
+            };
         };
 
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -560,17 +609,17 @@ impl App {
 
         let primitives = ctx.tessellate(full_output.shapes, ctx.pixels_per_point());
 
-        let mut renderer = self.state.egui_renderer.lock().unwrap();
+        let mut renderer = frame_ctx.egui_renderer.lock().unwrap();
 
         for (id, delta) in full_output.textures_delta.set.drain() {
             for d in &delta {
-                renderer.update_texture(device, &self.state.wgpu.queue, id, d);
+                renderer.update_texture(device, wgpu_queue, id, d);
             }
         }
 
         renderer.update_buffers(
             device,
-            &self.state.wgpu.queue,
+            wgpu_queue,
             &mut encoder,
             &primitives,
             &screen_descriptor,
@@ -596,11 +645,86 @@ impl App {
         drop(renderer);
         drop(pass);
 
-        self.state.wgpu.queue.submit([encoder.finish()]);
-        self.state.wgpu.queue.present(surface_texture);
-        self.event_queue.flush().unwrap();
-        Some(())
+        if let Some(ref path) = *frame_ctx.take_screenshot.borrow() {
+            let padded_bytes_per_row =
+                wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    
+            let buffer_size = (padded_bytes_per_row * height) as u64;
+    
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("screenshot staging buffer"),
+                size: buffer_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+    
+            encoder.copy_texture_to_buffer(
+                TexelCopyTextureInfoBase {
+                    texture: &surface_texture.texture,
+                    mip_level: 0,
+                    origin: Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                }, 
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_bytes_per_row),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+    
+            wgpu_queue.submit([encoder.finish()]);
+    
+            let slice = buffer.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+    
+            let data = slice.get_mapped_range().unwrap();
+    
+            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    
+            for row in 0..height as usize {
+                let start = row * padded_bytes_per_row as usize;
+                let end = start + (width * 4) as usize;
+                rgba.extend(data[start..end].as_chunks::<4>().0.iter().flat_map(|[b, g, r, a]| [r, g, b, a]));
+            }
+    
+            drop(data);
+            buffer.unmap();
+    
+            let _ = image::save_buffer(
+                path,
+                &rgba,
+                width,
+                height,
+                image::ColorType::Rgba8,
+            );
+        } else {
+            wgpu_queue.submit([encoder.finish()]);
+        }
+
+        wgpu_queue.present(surface_texture);
+        frame_ctx.event_queue.flush().unwrap();
+        Ok(())
     }
+}
+
+pub struct SurfaceLost;
+
+pub struct FrameContext<'a> {
+    pub wgpu: &'a WgpuInfo,
+    // pub output: &'a mut Output,
+    pub event_queue: &'a EventQueue<State>,
+    pub new_events: &'a mut bool,
+    pub egui_renderer: &'a Mutex<Renderer>,
+    pub take_screenshot: &'a RefCell<Option<PathBuf>>,
 }
 
 impl State {
@@ -628,7 +752,6 @@ delegate_noop!(State: ExtSessionLockManagerV1);
 
 delegate_noop!(State: ignore WlSurface);
 
-
 impl Dispatch<WlOutput, u32> for State {
     fn event(
         state: &mut Self,
@@ -638,9 +761,9 @@ impl Dispatch<WlOutput, u32> for State {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        if let wayland_client::protocol::wl_output::Event::Name { name } = event { 
+        if let wayland_client::protocol::wl_output::Event::Name { name } = event {
             let output = state.outputs.get_mut(data).unwrap();
-            output.display_name.init(name);
+            output.display_name.init(Rc::new(name));
         }
     }
 }

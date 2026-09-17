@@ -149,8 +149,40 @@ impl Dispatch<WlKeyboard, ()> for State {
 
                 let egui_key = match sym.raw() {
                     xkb::keysyms::KEY_BackSpace => Some(egui::Key::Backspace),
+
                     xkb::keysyms::KEY_Return | xkb::keysyms::KEY_KP_Enter => Some(egui::Key::Enter),
+
                     xkb::keysyms::KEY_Escape => Some(egui::Key::Escape),
+
+                    xkb::keysyms::KEY_Tab => Some(egui::Key::Tab),
+
+                    xkb::keysyms::KEY_Left => Some(egui::Key::ArrowLeft),
+                    xkb::keysyms::KEY_Right => Some(egui::Key::ArrowRight),
+                    xkb::keysyms::KEY_Up => Some(egui::Key::ArrowUp),
+                    xkb::keysyms::KEY_Down => Some(egui::Key::ArrowDown),
+
+                    xkb::keysyms::KEY_Home => Some(egui::Key::Home),
+                    xkb::keysyms::KEY_End => Some(egui::Key::End),
+                    xkb::keysyms::KEY_Page_Up => Some(egui::Key::PageUp),
+                    xkb::keysyms::KEY_Page_Down => Some(egui::Key::PageDown),
+
+                    xkb::keysyms::KEY_Delete => Some(egui::Key::Delete),
+
+                    xkb::keysyms::KEY_Insert => Some(egui::Key::Insert),
+
+                    xkb::keysyms::KEY_F1 => Some(egui::Key::F1),
+                    xkb::keysyms::KEY_F2 => Some(egui::Key::F2),
+                    xkb::keysyms::KEY_F3 => Some(egui::Key::F3),
+                    xkb::keysyms::KEY_F4 => Some(egui::Key::F4),
+                    xkb::keysyms::KEY_F5 => Some(egui::Key::F5),
+                    xkb::keysyms::KEY_F6 => Some(egui::Key::F6),
+                    xkb::keysyms::KEY_F7 => Some(egui::Key::F7),
+                    xkb::keysyms::KEY_F8 => Some(egui::Key::F8),
+                    xkb::keysyms::KEY_F9 => Some(egui::Key::F9),
+                    xkb::keysyms::KEY_F10 => Some(egui::Key::F10),
+                    xkb::keysyms::KEY_F11 => Some(egui::Key::F11),
+                    xkb::keysyms::KEY_F12 => Some(egui::Key::F12),
+
                     _ => None,
                 };
 
