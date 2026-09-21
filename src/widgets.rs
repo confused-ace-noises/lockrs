@@ -251,7 +251,7 @@ impl Uptime {
         Some(uptime.to_string())
     }
 
-    /// modify the uptime string itself. the passed-in string is formatted
+    /// modify the uptime string to be displayed. The passed-in string is formatted
     /// with the default formatting. (see [`Uptime`] docs for the description of the default)
     pub fn modify_uptime_string(mut self, f: impl FnOnce(String) -> String + 'static) -> Self {
         self.text_modify = Some(Box::new(f));
@@ -293,17 +293,30 @@ impl Widget for Uptime {
 
 #[derive(Default)]
 /// A simple label that shows the default network interface
-pub struct DefaultNetworkInterface(Option<Box<dyn FnOnce(RichText) -> RichText + 'static>>);
+pub struct DefaultNetworkInterface {
+    text_style: Option<Box<dyn FnOnce(RichText) -> RichText + 'static>>,
+    text_modify: Option<Box<dyn FnOnce(String) -> String>>,
+}
 
 impl DefaultNetworkInterface {
     /// Create a new [`DefaultNetworkInterface`]
     pub fn new() -> Self {
-        Self(None)
+        Self {
+            text_modify: None,
+            text_style: None,
+        }
     }
 
     /// Set the [`RichText`] style for the label
     pub fn set_text_style(mut self, f: impl FnOnce(RichText) -> RichText + 'static) -> Self {
-        self.0 = Some(Box::new(f));
+        self.text_style = Some(Box::new(f));
+        self
+    }
+
+    /// Sets the text to be displayed. The defualt string that's passed in only contains
+    /// the name of the interface
+    pub fn set_net_interface_string(mut self, f: impl FnOnce(String) -> String + 'static) -> Self {
+        self.text_modify = Some(Box::new(f));
         self
     }
 
@@ -319,14 +332,24 @@ impl DefaultNetworkInterface {
 
 impl Widget for DefaultNetworkInterface {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let interface = RichText::new(Self::interface().unwrap_or_else(|| String::from("ERROR")));
+        ui.ctx().request_repaint_after(Duration::from_secs(300));
 
-        let ingterface = if let Some(f) = self.0 {
+        let text = Self::interface().unwrap_or_else(|| String::from("ERROR"));
+
+        let text = if let Some(modifiy) = self.text_modify {
+            modifiy(text)
+        } else {
+            text
+        };
+
+        let interface = RichText::new(text);
+
+        let interface = if let Some(f) = self.text_style {
             f(interface)
         } else {
             interface
         };
 
-        ui.label(ingterface)
+        ui.label(interface)
     }
 }

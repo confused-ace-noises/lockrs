@@ -1,6 +1,8 @@
 //! [`App`]- and [`State`]-related functionality
 
-use std::{cell::RefCell, collections::HashMap, ffi::CStr, mem, os::raw::c_char, path::PathBuf, rc::Rc, sync::Mutex};
+#[cfg(feature = "screenshot")]
+use std::{cell::RefCell, path::PathBuf};
+use std::{collections::HashMap, ffi::CStr, mem, os::raw::c_char, rc::Rc, sync::{Arc, Mutex}};
 
 use egui::{Context, Modifiers, Ui};
 use egui_wgpu::{Renderer, RendererOptions};
@@ -23,19 +25,21 @@ use wayland_client::{
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1::ExtSessionLockV1,
 };
+#[cfg(feature = "screenshot")]
+use wgpu::{Origin3d, TexelCopyTextureInfoBase};
 use wgpu::{
-    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, Origin3d, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceColorSpace, SurfaceTarget, TexelCopyTextureInfoBase, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
+    Adapter, BackendOptions, Backends, CompositeAlphaMode, CurrentSurfaceTexture, Device, Instance, InstanceDescriptor, InstanceFlags, MemoryBudgetThresholds, Operations, PowerPreference, PresentMode, Queue, RequestAdapterOptions, SurfaceColorSpace, SurfaceTarget, TextureFormat, TextureUsages, TextureViewDescriptor, wgt::{DeviceDescriptor, SurfaceConfiguration, WgpuHasDisplayHandle},
 };
 use xkbcommon::xkb::{self};
 
 use crate::{
-    Output, Seat, WaylandDisplayH, WaylandSurfaceH,
-    utils::{global::Global, late::Late},
+    Output, Seat, WaylandDisplayH, WaylandSurfaceH, state::worker::LockrsWorker, utils::{global::Global, late::Late},
 };
 
 pub mod seat;
 pub mod session_lock;
 pub mod wl_registry;
+pub mod worker;
 
 /// App is the main way that information avaliable through the life of
 /// the program is stored.
@@ -104,6 +108,8 @@ pub struct State {
 
     /// PAM state
     pub pam: Late<Pam>,
+
+    pub worker: Option<LockrsWorker>
 }
 
 impl State {
@@ -124,6 +130,7 @@ impl State {
             is_locked: false,
             new_events: false,
             pam: Late::uninit(),
+            worker: None,
         }
     }
 }
@@ -131,12 +138,10 @@ impl State {
 /// PAM data returned by `getpwuid_r` call.
 ///
 /// Initialized by [`App::init_pam`].
+#[derive(Debug, Clone)]
 pub struct Pam {
     pub uid: u32,
-    _buffer: Vec<i8>,
-    _passwd: passwd,
-    _res: *mut passwd,
-    pub username: String,
+    pub username: Arc<String>,
 }
 
 /// Input data.
@@ -210,6 +215,7 @@ impl App {
     ///     app.init_input();
     ///     app.init_pam();
     ///     app.image_capabilities();
+    ///     app.init_worker();
     /// }
     /// app.state.init_done = true;
     /// ```
@@ -266,6 +272,7 @@ impl App {
             app.init_input();
             app.init_pam();
             app.init_image_capabilities();
+            app.init_worker();
         }
 
         app.state.init_done = true;
@@ -294,7 +301,7 @@ impl App {
         let lock = session_lock_manager.lock(&qh, ());
 
         for (name, output) in &mut self.state.outputs {
-            let wl_surface = compositor.create_surface(&qh, ());
+            let wl_surface = compositor.create_surface(&qh, *name);
             let role = lock.get_lock_surface(&wl_surface, &output.wl_output, &qh, *name);
 
             let handle = WaylandSurfaceH::new(&wl_surface);
@@ -305,6 +312,7 @@ impl App {
                 surface_handle: handle,
                 width: Late::uninit(),
                 height: Late::uninit(),
+                pending_scaling: Late::uninit(),
                 wgpu_surface: Late::uninit(),
             });
         }
@@ -413,9 +421,10 @@ impl App {
             pollster::block_on(adapter.request_device(&DeviceDescriptor::default())).unwrap();
 
         self.state.outputs.iter_mut().for_each(|(_, output)| {
+            let ppp = if output.surface_info.pending_scaling.is_init() { *output.surface_info.pending_scaling } else { 1. };
             output.surface_info.wgpu_surface.configure(
                 &device,
-                &Self::wgpu_surface_config(*output.surface_info.width, *output.surface_info.height),
+                &Self::wgpu_surface_config((*output.surface_info.width as f32 * ppp).round() as u32, (*output.surface_info.height as f32 * ppp).round() as u32),
             );
         });
 
@@ -429,7 +438,10 @@ impl App {
 
     fn wgpu_surface_config(width: u32, height: u32) -> SurfaceConfiguration<Vec<TextureFormat>> {
         SurfaceConfiguration {
+            #[cfg(feature = "screenshot")]
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            #[cfg(not(feature = "screenshot"))]
+            usage: TextureUsages::RENDER_ATTACHMENT,
             format: TextureFormat::Bgra8UnormSrgb,
             width,
             height,
@@ -465,6 +477,9 @@ impl App {
     pub unsafe fn init_egui(&mut self) {
         for output in self.state.outputs.values_mut() {
             let ctx = Context::default();
+            if output.surface_info.pending_scaling.is_init() {
+                ctx.set_pixels_per_point(*output.surface_info.pending_scaling);
+            }
             ctx.input_mut(|x| x.max_texture_side = 8000);
             output.egui_context.init(ctx);
         }
@@ -520,19 +535,33 @@ impl App {
 
         self.state.pam.init(Pam {
             uid,
-            _buffer: buf,
-            _passwd: pwd,
-            _res: res,
-            username,
+            username: Arc::new(username),
         });
     }
 
-    pub fn pam_auth(&self, passwd: &String) -> bool {
+    /// initializes the lockrs worker thread during [`App`] init. This is normally called by [`App::init`],
+    /// but may be called manually if initializing [`App`] manually.
+    ///
+    /// # Initializes
+    /// - `state.worker`
+    /// 
+    /// # Safety
+    /// This assumes that `state.pam` has been initialized. 
+    /// It is UB to call this function without asserting that it is.
+    pub unsafe fn init_worker(&mut self) {
+        let pam = &*self.state.pam;
+
+        let worker = LockrsWorker::new(pam.clone());
+
+        self.state.worker = Some(worker);
+    }
+
+    pub fn pam_auth(pam: &Pam, passwd: &String) -> bool {
         let mut pam_client =
             pam::Client::with_password("login").expect("failed to start PAM client");
         pam_client
             .conversation_mut()
-            .set_credentials(&self.state.pam.username, passwd);
+            .set_credentials(pam.username.as_ref(), passwd);
         pam_client.authenticate().is_ok()
     }
 
@@ -551,7 +580,6 @@ impl App {
         frame_ctx: FrameContext<'a>,
         output: &'a mut Output,
         run_ui: impl for<'b> FnMut(&'b mut Ui),
-        // handle_action: impl for<'c> FnOnce(&'c mut FrameContext<'a>)
     ) -> Result<(), SurfaceLost> {
         let device = &frame_ctx.wgpu.device;
         // let output = frame_ctx.output;
@@ -566,6 +594,7 @@ impl App {
             return Ok(());
         }
 
+        let ppp = ctx.pixels_per_point();
         *frame_ctx.new_events = false;
 
         let surface_texture = loop {
@@ -573,10 +602,16 @@ impl App {
                 CurrentSurfaceTexture::Success(texture) => break texture,
                 CurrentSurfaceTexture::Suboptimal(texture) => {
                     drop(texture);
-                    wgpu_surface.configure(device, &Self::wgpu_surface_config(width, height));
+                    wgpu_surface.configure(
+                        device, 
+                        &Self::wgpu_surface_config((width as f32 * ppp).round() as u32, (height as f32 * ppp).round() as u32)
+                    );
                 },
                 CurrentSurfaceTexture::Outdated => {
-                    wgpu_surface.configure(device, &Self::wgpu_surface_config(width, height));
+                    wgpu_surface.configure(
+                        device, 
+                        &Self::wgpu_surface_config((width as f32 * ppp).round() as u32, (height as f32 * ppp).round() as u32)
+                    );
                 },
                 CurrentSurfaceTexture::Timeout 
                     | CurrentSurfaceTexture::Occluded
@@ -591,12 +626,13 @@ impl App {
             .texture
             .create_view(&TextureViewDescriptor::default());
 
+
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [width, height],
-            pixels_per_point: ctx.pixels_per_point(),
+            size_in_pixels: [(width as f32 * ppp).round() as u32, (height as f32 * ppp).round() as u32],
+            pixels_per_point: ppp,
         };
 
-        let raw_input = egui::RawInput {
+        let raw_input: egui::RawInput = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::Vec2::new(width as f32, height as f32),
@@ -645,11 +681,16 @@ impl App {
         drop(renderer);
         drop(pass);
 
+        #[cfg(feature = "screenshot")]
         if let Some(ref path) = *frame_ctx.take_screenshot.borrow() {
+            use crate::state::worker::SaveImageData;
+
+            let physical_h = (height as f32 * ppp).round() as u32;
+            let physical_w = (width as f32 * ppp).round() as u32;
             let padded_bytes_per_row =
-                wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+                wgpu::util::align_to(physical_w * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     
-            let buffer_size = (padded_bytes_per_row * height) as u64;
+            let buffer_size = (padded_bytes_per_row * physical_h) as u64;
     
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("screenshot staging buffer"),
@@ -670,12 +711,12 @@ impl App {
                     layout: wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(padded_bytes_per_row),
-                        rows_per_image: Some(height),
+                        rows_per_image: Some(physical_h),
                     },
                 },
                 wgpu::Extent3d {
-                    width,
-                    height,
+                    width: physical_w,
+                    height: physical_h,
                     depth_or_array_layers: 1,
                 },
             );
@@ -688,27 +729,19 @@ impl App {
     
             let data = slice.get_mapped_range().unwrap();
     
-            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    
-            for row in 0..height as usize {
-                let start = row * padded_bytes_per_row as usize;
-                let end = start + (width * 4) as usize;
-                rgba.extend(data[start..end].as_chunks::<4>().0.iter().flat_map(|[b, g, r, a]| [r, g, b, a]));
-            }
-    
-            drop(data);
-            buffer.unmap();
-    
-            let _ = image::save_buffer(
-                path,
-                &rgba,
-                width,
-                height,
-                image::ColorType::Rgba8,
-            );
+            frame_ctx.worker.send(worker::WorkerEvent::SaveImage(SaveImageData {
+                buffer,
+                data,
+                physical_h,
+                physical_w,
+                padded_bytes_per_row,
+                path: path.clone(),
+            }));
         } else {
             wgpu_queue.submit([encoder.finish()]);
         }
+        #[cfg(not(feature = "screenshot"))]
+        wgpu_queue.submit([encoder.finish()]);
 
         wgpu_queue.present(surface_texture);
         frame_ctx.event_queue.flush().unwrap();
@@ -720,11 +753,13 @@ pub struct SurfaceLost;
 
 pub struct FrameContext<'a> {
     pub wgpu: &'a WgpuInfo,
-    // pub output: &'a mut Output,
     pub event_queue: &'a EventQueue<State>,
     pub new_events: &'a mut bool,
     pub egui_renderer: &'a Mutex<Renderer>,
+    #[cfg(feature = "screenshot")]
     pub take_screenshot: &'a RefCell<Option<PathBuf>>,
+    #[cfg(feature = "screenshot")]
+    pub worker: &'a LockrsWorker
 }
 
 impl State {
@@ -750,7 +785,31 @@ impl State {
 delegate_noop!(State: WlCompositor);
 delegate_noop!(State: ExtSessionLockManagerV1);
 
-delegate_noop!(State: ignore WlSurface);
+// name of the output this surface belongs to
+//                       vvv
+impl Dispatch<WlSurface, u32> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &WlSurface,
+        event: <WlSurface as Proxy>::Event,
+        output_name: &u32,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            wayland_client::protocol::wl_surface::Event::Enter { .. } => {},
+            wayland_client::protocol::wl_surface::Event::Leave { .. } => {},
+            wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } => {
+                if let Some(o) = state.outputs.get_mut(output_name) {
+                    o.surface_info.pending_scaling.init(factor as f32)
+                }
+                proxy.set_buffer_scale(factor);
+            },
+            wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {},
+            _ => unimplemented!(),
+        }
+    }
+}
 
 impl Dispatch<WlOutput, u32> for State {
     fn event(

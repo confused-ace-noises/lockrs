@@ -19,18 +19,21 @@ This is my personal lock screen:
 // ---- deps ----
 use egui::{Color32, Image, include_image};
 use lockrs::prelude::*;
+// this example also depends on egui_alignments = "0.3.9"
+use egui_alignments::center_vertical;
 // ---- deps ----
 
 // main
 let mut app = App::init();
 
 let mut password = String::new();
+let mut has_failed = false;
 
 app.ui(|_output_name, ui, exit| {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
-            Image::new(include_image!("path/to/background")).paint_at(ui, ui.ctx().content_rect());
+            Image::new(include_image!("path/to/bg.png")).paint_at(ui, ui.ctx().content_rect());
 
             center_vertical(ui, |ui| {
                 ui.vertical_centered(|ui| {
@@ -41,26 +44,34 @@ app.ui(|_output_name, ui, exit| {
                     );
 
                     ui.add(
-                        egui::TextEdit::singleline(&mut password)
-                            .desired_width(300.0)
-                            .hint_text("Password...")
-                            .horizontal_align(egui::Align::Center)
-                            .password(true),
-                    );
-
-                    if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                        *exit = Action::Force
-                    } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                        *exit = Action::PasswdCheck(password.clone())
-                    }
-                })
-            })
+                        PasswordTextEdit::new(&mut password, &mut has_failed)
+                            .modify_textedit(|t| {
+                                t.desired_width(300.0)
+                                    .horizontal_align(egui::Align::Center)
+                            })
+                            .modify_failure_text(|t| t.size(20.0).color(Color32::BLACK))
+                            .set_fail_text_location(FailureTextLocation::Bottom(egui::Align::Center))
+                    ); 
+                });
+            });
         });
+
+    if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        *exit = Action::PasswdCheck(password.clone());
+        has_failed = true;
+    } else if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        *exit = Action::ForceExit;
+    } else if ui.input(|input| input.key_pressed(egui::Key::End)) {
+        *exit = Action::TakeScreenshot(PathBuf::from_str("screenshot.png").unwrap());
+    }
 });
 ```
 
 this code will produce the following output:
-![screenshot of lockrs' output](.assets/screenshot.png)
+![screenshot of lockrs' output](.assets/screenshot_simple.png)
+
+See the example directory for a more complex example
+![a slightly more complex screenshot of lockrs' output](.assets/screenshot.png)
 
 ## Usage
 To use this library, simply add it in the dependencies of your Rust project:
@@ -68,9 +79,9 @@ To use this library, simply add it in the dependencies of your Rust project:
 # Cargo.toml
 
 [dependencies]
-lockrs = "0.3.0" # put latest version here
+lockrs = "0.4.0" # put latest version here
 
-egui = "0.36.1"
+egui = "0.36.2"
 ```
 
 ### Updates

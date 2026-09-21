@@ -356,18 +356,26 @@ impl Dispatch<WlPointer, ()> for State {
             for event in output.pointer_events.drain(..) {
                 match event {
                     PointerEvent::Event(event) => match event {
-                        wl_pointer::Event::Enter { .. } => {
-                            output
-                                .events_to_flush
-                                .push(egui::Event::WindowFocused(true));
+                        wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => {
+                            if output.surface_info.surface == surface {
+                                output
+                                    .events_to_flush
+                                    .extend([egui::Event::WindowFocused(true), egui::Event::PointerMoved(
+                                        Pos2::new(surface_x as f32, surface_y as f32)
+                                    )]);
+                                output.is_focused = true;
+                            }
                             state.input.pointer.as_mut().unwrap().focused_output =
                                 Some(output.name);
                         }
 
-                        wl_pointer::Event::Leave { .. } => {
-                            output
-                                .events_to_flush
-                                .push(egui::Event::WindowFocused(false));
+                        wl_pointer::Event::Leave { surface, .. } => {
+                            if output.surface_info.surface == surface {
+                                output
+                                    .events_to_flush
+                                    .extend([egui::Event::PointerGone, egui::Event::WindowFocused(false)]);
+                                output.is_focused = false;
+                            }
                             state.input.pointer.as_mut().unwrap().focused_output = None;
                         }
 
@@ -377,10 +385,12 @@ impl Dispatch<WlPointer, ()> for State {
                             surface_y,
                         } => {
                             state.input.pointer.as_mut().unwrap().last_pointer_pos = Some((surface_x as f32, surface_y as f32));
-                            output.events_to_flush.push(egui::Event::PointerMoved(Pos2 {
-                                x: surface_x as f32,
-                                y: surface_y as f32,
-                            }));
+                            if output.is_focused {
+                                output.events_to_flush.push(egui::Event::PointerMoved(Pos2 {
+                                    x: surface_x as f32,
+                                    y: surface_y as f32,
+                                }));
+                            }
                         }
 
                         wl_pointer::Event::Button {
@@ -389,6 +399,8 @@ impl Dispatch<WlPointer, ()> for State {
                             button,
                             state: button_state,
                         } => {
+                            if !output.is_focused { continue; }
+
                             let modifiers = state
                                 .input
                                 .keyboard
@@ -429,6 +441,7 @@ impl Dispatch<WlPointer, ()> for State {
                         available_modes,
                         is_stop
                     } => {
+                        if !output.is_focused { continue; }
                         let is_axis120 = || available_modes & 0b0000010 == 0b0000010;
                         let is_axis_discrete = || available_modes & 0b0000100 == 0b0000100;
                         let is_axis = || available_modes & 0b0000001 == 0b0000001;

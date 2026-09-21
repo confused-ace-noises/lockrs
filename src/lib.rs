@@ -73,8 +73,9 @@
 //! 
 //! ### Updates
 //! This library may be updated in the future, so if it does happen, the API will probably change a bit until it's in a more stable situation.
-
-use std::{cell::RefCell, collections::VecDeque, ffi::c_void, path::PathBuf, ptr::NonNull, rc::Rc};
+#[cfg(feature = "screenshot")]
+use std::{cell::RefCell, path::PathBuf};
+use std::{collections::VecDeque, ffi::c_void, ptr::NonNull, rc::Rc};
 
 use egui::Ui;
 use raw_window_handle::{
@@ -87,7 +88,7 @@ use wayland_client::{
 };
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::ExtSessionLockSurfaceV1;
 use wgpu::{Surface as WgpuSurface, SurfaceTarget};
-use crate::{state::{App, FrameContext, PointerEvent}, utils::late::Late};
+use crate::{state::{App, FrameContext, PointerEvent, worker::WorkerEvent}, utils::late::Late};
 
 pub mod state;
 pub mod utils;
@@ -127,6 +128,7 @@ pub struct Output {
     /// whether the ext_session_lock_surface_v1 surface has gotten a
     /// configure event
     pub configured: bool,
+    pub is_focused: bool,
 }
 
 impl Output {
@@ -145,6 +147,7 @@ impl Output {
             name,
             display_name: Late::uninit(),
             configured: false,
+            is_focused: true,
         }
     }
 }
@@ -156,6 +159,7 @@ pub struct SurfaceInfo {
     pub surface_handle: WaylandSurfaceH,
     pub width: Late<u32>,
     pub height: Late<u32>,
+    pub pending_scaling: Late<f32>,
     pub wgpu_surface: Late<WgpuSurface<'static>>
 }
 
@@ -220,9 +224,11 @@ unsafe impl Sync for WaylandSurfaceH {}
 /// - [`Action::ForceExit`]: force the lockscreen to exit without doing a password check.
 /// - [`Action::PasswdCheck`]: pass a [`String`]; if it matches the password,
 ///   the lockscreen will exit, otherwise assume that the password check failed.
-/// - [`Action::TakeScreenshot`]: pass a [`PathBuf`], and a screenshot of the lockscreen
+/// - [`Action::TakeScreenshot`]: pass a [`PathBuf`], and a screenshot of the lockscreen. Only available 
+///   with the `screenshot` feature.
 pub enum Action {
     None,
+    #[cfg(feature = "screenshot")]
     TakeScreenshot(PathBuf),
     ForceExit, 
     PasswdCheck(String),
@@ -244,6 +250,7 @@ impl App {
     pub fn ui<F: for<'a> FnMut(&String, &'a mut Ui, &mut Action)>(&mut self, mut output_fn: F) {
         let mut should_break: bool;
         let mut should_auth: Option<String>;
+        let mut doing_auth = false;
         let mut should_recreate_surface = VecDeque::new();
 
         loop {
@@ -264,6 +271,7 @@ impl App {
                 
                 let name = (*output.display_name).clone();
                 
+                #[cfg(feature = "screenshot")]
                 let screen_path = RefCell::new(None);
 
                 let run_ui = coerce_hrtb(|ui| {
@@ -271,13 +279,15 @@ impl App {
 
                     match &exit {
                         Action::None => {},
+                        #[cfg(feature = "screenshot")]
                         Action::TakeScreenshot(path_buf) => {
                             *screen_path.borrow_mut() = Some(path_buf.clone())
                         },
                         Action::ForceExit => should_break = true,
-                        Action::PasswdCheck(passwd) => {
+                        Action::PasswdCheck(passwd) if !doing_auth => {
                             should_auth = Some(passwd.clone())
                         },
+                        Action::PasswdCheck(_) => {}, // dont register if it was already doing auth
                     }
                 });
 
@@ -286,7 +296,10 @@ impl App {
                     event_queue: &self.event_queue,
                     new_events: &mut self.state.new_events,
                     egui_renderer: &self.state.egui_renderer,
-                    take_screenshot: &screen_path
+                    #[cfg(feature = "screenshot")]
+                    take_screenshot: &screen_path,
+                    #[cfg(feature = "screenshot")]
+                    worker: self.state.worker.as_ref().expect("worker should be available here")
                 };
 
 
@@ -298,8 +311,16 @@ impl App {
             // split to ensure short-circuiting behavior on should_break
             if should_break {
                 break;
-            } else if let Some(pwd) = should_auth && self.pam_auth(&pwd) {
-                break;
+            } else if doing_auth {
+                if let Some(maybe_exit) = self.state.worker.as_mut().expect("worker should be available here").try_recv() {
+                    doing_auth = false;
+                    if maybe_exit {
+                        break;
+                    }
+                }
+            } else if let Some(pwd) = should_auth && !doing_auth {
+                doing_auth = true;
+                self.state.worker.as_ref().expect("worker should be available here").send(WorkerEvent::CheckPassword(pwd));
             }
         }
 
@@ -307,6 +328,9 @@ impl App {
 
         self.state.session_lock.unlock_and_destroy();
         self.event_queue.roundtrip(&mut self.state).unwrap();
+        if let Some(w) = self.state.worker.take() {
+            w.join();
+        }
     }
 }
 
