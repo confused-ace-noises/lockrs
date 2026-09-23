@@ -11,6 +11,8 @@ So, the whole reason for this project's existence isn't to provide a ready-to-us
 
 To use the library, you first need to initialize the `App` struct through the `init` method. This will connect to the compositor, handle the surfaces, initialize `wgpu` and `egui` and handle the low-level stuff, in general. Once you init the `App` struct, you can use the `ui` method to talk to `egui`.
 
+Lockrs can also take screenshots via `Action`; if you do not wish to use this, just disable the default features.
+
 Note: it's heavily recommended to compile this crate with `opt-level = 3`, because the image loading that egui does for the background, for example, is ***significanlty*** sped up (a few seconds to a few milliseconds). This may achieved by manually setting the `opt-level` for the desidered profile in the `Cargo.toml`, or compiling with the `--release` flag.
 
 ## Example
@@ -62,6 +64,7 @@ app.ui(|_output_name, ui, exit| {
     } else if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         *exit = Action::ForceExit;
     } else if ui.input(|input| input.key_pressed(egui::Key::End)) {
+        // only with the screenshot feature
         *exit = Action::TakeScreenshot(PathBuf::from_str("screenshot.png").unwrap());
     }
 });
